@@ -3,3 +3,4 @@ A surrogate endpoint is a biomarker or intermediate clinical outcome used instea
 
 # Reference
 Jo-Ying Hung, Chih-Yuan Hsu, Pei-Fang Su, and Yu Shyr (2025). Evaluation Methods for T-association of a Surrogate Endpoint. medRxiv, 2025-08.
+https://www.medrxiv.org/content/10.1101/2025.08.28.25334653v1
