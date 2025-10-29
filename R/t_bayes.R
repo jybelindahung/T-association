@@ -7,7 +7,7 @@
 #' @importFrom cmdstanr cmdstan_model
 #' @importFrom posterior as_draws_df subset_draws summarise_draws
 #' @importFrom stats quantile plogis qlogis qnorm sd var
-#' @importFrom utils capture.output
+#' @importFrom utils capture.output modifyList
 #' @param data A list containing transformed treatment effect estimates and corresponding standard errors for both endpoints.
 #'             Required columns: `y1`, `se1`, `y2`, `se2`.
 #' @param psi.prior.dist Character string specifying the prior for the between-study variances.
@@ -26,19 +26,35 @@
 #'     \item{\code{"fisherz"}}{Fisher z-transform normal prior [default].}
 #'     \item{\code{"uniform"}}{Uniform prior on \eqn{\rho} in [-1,1].}
 #'   }
-#' @param nuts_params List of settings for the NUTS sampler used by Stan (via cmdstanr).
-#'   Passed directly to \code{mod$sample()}. Default:
+#' @param nuts_params A named list of settings controlling the
+#'   No-U-Turn Sampler (NUTS) used when fitting the model via cmdstanr.
+#'
+#'   These settings are passed internally to the
+#'   \code{\link[cmdstanr]{sample}} method of a
+#'   \code{\link[cmdstanr]{CmdStanModel}} object (created via
+#'   \code{\link[cmdstanr]{cmdstan_model}}).
+#'
+#'   The default is:
 #'   \preformatted{
-#'   list(chains = 4, iter_warmup = 1000, iter_sampling = 1000, adapt_delta = 0.99)
+#'   list(chains = 4,
+#'     iter_warmup = 1000,
+#'     iter_sampling = 1000,
+#'     adapt_delta = 0.99
+#'   )
 #'   }
+#'   Typical components include:
 #'   \describe{
-#'     \item{\code{chains}}{Integer. Number of parallel MCMC chains. Default is 4.}
-#'     \item{\code{iter_warmup}}{Integer. Number of warm-up iterations per chain. Default is 1000.}
-#'     \item{\code{iter_sampling}}{Integer. Number of post-warm-up sampling iterations per chain. Default is 1000.}
-#'     \item{\code{adapt_delta}}{Numeric. Target acceptance probability for the NUTS sampler.
-#'       Higher values make the sampler more conservative and reduce the chance of divergent transitions,
-#'       at the cost of longer computation. Default is 0.99.}
+#'     \item{\code{chains}}{Integer. Number of parallel MCMC chains. Default: 4.}
+#'     \item{\code{iter_warmup}}{Integer. Number of warm-up iterations per chain. Default: 1000.}
+#'     \item{\code{iter_sampling}}{Integer. Number of post-warm-up sampling iterations per chain. Default: 1000.}
+#'     \item{\code{adapt_delta}}{Numeric. Target acceptance probability for the NUTS step size adaptation.
+#'     Higher values (closer to 1) reduce the risk of divergent transitions, at the cost of longer runtime. Default: 0.99.}
 #'   }
+#'
+#'   Other arguments supported by \code{\link[cmdstanr]{sample}}, such as
+#'   \code{seed}, \code{init}, \code{max_treedepth}, can also be included.
+#'   Any arguments not specified in \code{nuts_params} will retain the
+#'   default values from \code{\link[cmdstanr]{sample}}.
 #' @param verbose Logical. If \code{TRUE}, prints progress messages from Stan. Default is \code{TRUE}.
 #' @param alpha Numeric. Significance level for posterior credible intervals. Default is 0.05.
 #' @return A list with two elements:
@@ -48,10 +64,10 @@
 #'   \item{\code{prior_summary}}{Character vector describing the priors used for each parameter.}
 #' }
 #' @examples
-#' data <- list(y1 = c(0.263, -0.007, 0.481, 1.006, 0.734, 0.436, 0.097, -0.191),
-#'              se1 = c(0.053, 0.032, 0.047, 0.037, 0.016, 0.072, 0.085, 0.074),
-#'              y2 = c(0.661, 0.777, 0.798, 1.061, 1.225, 0.728, 0.036, 0.610),
-#'              se2 = c(0.049, 0.023, 0.061, 0.065, 0.012, 0.034, 0.083, 0.080))
+#' data <- list(y1 = c(0.198, -0.091, 0.345, 1.193, 0.828, 1.671, 0.152, 1.416),
+#'              se1 = c(0.076, 0.081, 0.062, 0.387, 0.497, 0.195, 0.432, 0.254),
+#'              y2 = c(-0.234, -0.614, -0.054, -0.670, 0.105, 1.045, -0.910, 0.485),
+#'              se2 = c(0.465, 0.408, 0.240, 0.384, 0.239, 0.434, 0.141, 0.159))
 #' t_bayes(data)
 #' t_bayes(data, rho.prior.dist = "uniform")
 #' @export
@@ -94,24 +110,27 @@ t_bayes <- function(data,
   # Compile model
   mod <- cmdstan_model(mod_path)
 
-  # Extract nuts parameters from the list
-  chains <- nuts_params$chains
-  iter_warmup <- nuts_params$iter_warmup
-  iter_sampling <- nuts_params$iter_sampling
-  adapt_delta <- nuts_params$adapt_delta
+  # import nuts parameters from the list
+  # first set default NUTS parameters
+  default_nuts_params <- list(
+    chains = 4,
+    iter_warmup = 1000,
+    iter_sampling = 1000,
+    adapt_delta = 0.99,
+    refresh = 0
+  )
+
+  # Merge with user-specified nuts_params
+  nuts_params <- modifyList(default_nuts_params, nuts_params)
+
+  # Add required elements
+  nuts_params$data <- stan_data
+  nuts_params$parallel_chains <- nuts_params$chains
+  nuts_params$show_messages <- verbose
 
   # Fit model
   fit <- tryCatch({
-    mod$sample(
-      data = stan_data,
-      chains = chains,
-      parallel_chains = chains,
-      iter_warmup = iter_warmup,
-      iter_sampling = iter_sampling,
-      refresh = 0,
-      adapt_delta = adapt_delta,
-      show_messages = verbose
-    )
+    do.call(mod$sample, nuts_params)
   }, error = function(e) e)
 
   if (!inherits(fit, "CmdStanMCMC")) {

@@ -1,6 +1,6 @@
 #' @title Frequentist estimation for BRMA model parameters
 #' @description Computes point estimates and confidence intervals for the Bivariate Random-Effects Meta-Analysis (BRMA) model using frequentist methods.
-#' @importFrom rootSolve multiroot
+#' @importFrom nleqslv nleqslv
 #' @importFrom MASS mvrnorm
 
 #' @param data A list containing transformed treatment effect estimates and corresponding standard errors for both endpoints.
@@ -8,6 +8,30 @@
 #' @param method Character string specifying the frequentist estimation method. Supported options: \code{c("REML" , "ML")}. Default is \code{"REML"}.
 #' @param interval.method Character string specifying the method to construct confidence intervals. Supported options: \code{c("wald", "bootstrap", "auto")}.
 #'                        Default is \code{"auto"}, which chooses appropriate method based on sample size.
+#' @param nleqslv.param A list of control settings passed directly to
+#'   \code{\link[nleqslv]{nleqslv}} for solving the system of nonlinear equations
+#'   used to obtain point estimates.
+#'
+#'   The default is:
+#'   \preformatted{
+#'   list(
+#'     method = "Broyden",
+#'     control = list(maxit = 200, ftol = 1e-6, xtol = 1e-6)
+#'   )
+#'   }
+#'
+#'   The list typically includes:
+#'   \describe{
+#'     \item{\code{method}}{Character string specifying the numerical method used.
+#'       Common options include \code{"Broyden"}, \code{"Newton"}, or \code{"dfp"}.}
+#'     \item{\code{control}}{A list of algorithmic control parameters, such as
+#'       \code{maxit} (maximum number of iterations),
+#'       \code{ftol} (function tolerance), and
+#'       \code{xtol} (solution tolerance).}
+#'   }
+#'
+#'   For a complete description of available methods and control options,
+#'   see \code{\link[nleqslv]{nleqslv}}.
 #' @param bootstrap.times Integer. Number of bootstrap replications if \code{interval.method = "bootstrap"}. Default is 1000.
 #' @param pars.start Numeric vector of initial values for iterative parameter estimation. If \code{NULL}, data-driven initial values are used.
 #' @param verbose Logical. If \code{TRUE}, shows progress messages. Default is \code{TRUE}.
@@ -19,10 +43,10 @@
 #'   \item{Summary}{A character string summarizing the estimation method and how confidence intervals were computed.}
 #' }
 #' @examples
-#' data <- list(y1 = c(0.263, -0.007, 0.481, 1.006, 0.734, 0.436, 0.097, -0.191),
-#'              se1 = c(0.053, 0.032, 0.047, 0.037, 0.016, 0.072, 0.085, 0.074),
-#'              y2 = c(0.661, 0.777, 0.798, 1.061, 1.225, 0.728, 0.036, 0.610),
-#'              se2 = c(0.049, 0.023, 0.061, 0.065, 0.012, 0.034, 0.083, 0.080))
+#' data <- list(y1 = c(0.198, -0.091, 0.345, 1.193, 0.828, 1.671, 0.152, 1.416),
+#'              se1 = c(0.076, 0.081, 0.062, 0.387, 0.497, 0.195, 0.432, 0.254),
+#'              y2 = c(-0.234, -0.614, -0.054, -0.670, 0.105, 1.045, -0.910, 0.485),
+#'              se2 = c(0.465, 0.408, 0.240, 0.384, 0.239, 0.434, 0.141, 0.159))
 #' t_freq(data) # parameters estimated by REML;
 #'              # confidence intervals constructed by bootstrap (sample size <10)
 #' t_freq(data, method = "ML", interval.method = "Wald", verbose = TRUE)
@@ -33,6 +57,11 @@ t_freq <- function(data,
                    interval.method = c("auto", "Wald", "bootstrap"),
                    bootstrap.times = 1000,
                    pars.start = NULL,
+                   nleqslv.param = list(
+                     method = "Broyden",
+                     control = list(maxit = 200,
+                                    ftol = 1e-6,
+                                    xtol = 1e-6)),
                    verbose = TRUE,
                    alpha = 0.05) {
   # Input checks
@@ -58,68 +87,142 @@ t_freq <- function(data,
   } else {
     paste0("Wald ", ci_label, "% CI")
   }
-
+  param.names <- c("beta1", "beta2", "psi1_2", "psi2_2", "rho")
   # Run selected method
   if (method == "ML") {
     if (verbose) message("Running ML estimation...")
     old_warn <- getOption("warn"); options(warn = -1)
-    ml.res <- tryCatch(ml.solve(data, pars.start = pars.start, verbose = verbose, alpha = alpha), error = function(e) NULL)
+    mlsolve.res <- ml_solve(data,
+                            pars.start = pars.start,
+                            verbose = verbose,
+                            nleqslv.param = nleqslv.param)
+    if (is.null(mlsolve.res)) return(NULL)
+    ml.root <- mlsolve.res$x
+    # Compute Hessian & SE
+    ml.Htrans_Htheta <- ml_hessian(data, ml.root)
+    ml.setrans_setheta <- freq_se(ml.Htrans_Htheta)
+    # Compute Wald CI
+    ml.est_wald.ci <- freq_WaldCI(ml.root, ml.setrans_setheta$se.trans, alpha = alpha)
+    df.mlwald <- data.frame(
+      Parameter = param.names,
+      Estimates = ml.est_wald.ci$Estimates,
+      SE = ml.setrans_setheta$se.orig
+    )
+    df.mlwald[[ci_colname]] <- ml.est_wald.ci$CI
     options(warn = old_warn)
-    if (is.null(ml.res)) return(NULL)
-
     if (interval.method == "bootstrap") {
       if (verbose) message(sprintf("Running ML bootstrap (%d resamples)...", bootstrap.times))
-      ML.boot <- ml.param.boot(data, ml.res, bootstrap.times)
-      ml.res[[ci_colname]] <- sprintf("(%.3f, %.3f)", ML.boot$bootCI_lower, ML.boot$bootCI_upper)
-      ml.res <- ml.res[, c("Parameter", "Estimates", ci_colname)]  # hide se & Wald CI
+      mlboot.res <- ml_paramBoot(data,
+                                 ml.results = df.mlwald,
+                                 bootstrap.times = bootstrap.times,
+                                 pars.start = pars.start,
+                                 nleqslv.param = nleqslv.param,
+                                 alpha = alpha)
+      df.mlboot <- data.frame(
+        Parameter = param.names,
+        Estimates = ml.est_wald.ci$Estimates
+      )
+      df.mlboot[[ci_colname]] <- sprintf("(%.3f, %.3f)", mlboot.res$bootCI_lower, mlboot.res$bootCI_upper)
+      ML <- df.mlboot
     } else if (interval.method == "Wald") {
       if (verbose) message("Computing ML Wald CIs...")
-      colnames(ml.res) <- c("Parameter", "Estimates", "SE", ci_colname)
+      ML <- df.mlwald
     }
 
     text_summary <- paste0(
-      "Point estimates obtained using Maximum Likelihood (ML).\n",
+      "Point estimates obtained using Maximum Likelihood (ML). ",
       sprintf("%s%% confidence intervals computed using the %s method%s.",
               round((1 - alpha) * 100),
               interval.method,
               if (interval.method == "bootstrap") sprintf(" with %d bootstrap replicates", bootstrap.times) else "")
     )
-
-    return(list(table = ml.res, summary = text_summary))
+    return(list(Results = ML, Summary = text_summary))
   }
-
   if (method == "REML") {
     if (verbose) message("Running REML estimation...")
     old_warn <- getOption("warn"); options(warn = -1)
-    reml.res <- tryCatch(reml.solve(data, pars.start = pars.start, verbose = verbose, alpha = alpha), error = function(e) NULL)
-    options(warn = old_warn)
-    if (is.null(reml.res)) return(NULL)
+    remlsolve.res <- reml_solve(data,
+                                pars.start = pars.start,
+                                verbose = verbose,
+                                nleqslv.param = nleqslv.param)
+    if (is.null(remlsolve.res)) return(NULL)
+    reml.root <- remlsolve.res$x
+    reml.beta <- solve_remlBeta(reml.root, data)
+    # Compute Hessian & SE
+    reml.Htrans_Htheta <- reml_hessian(data, reml.root)
+    reml.setrans_setheta <- freq_se(reml.Htrans_Htheta)
+    # Compute Wald CI
+    reml.est_wald.ci <- freq_WaldCI(c(reml.beta$beta_hat, reml.root),
+                                    c(reml.beta$se_beta_hat, reml.setrans_setheta$se.trans), alpha = alpha)
 
+    df.remlwald <- data.frame(
+      Parameter = param.names,
+      Estimates = c(reml.est_wald.ci$Estimates),
+      SE = c(reml.beta$se_beta_hat, reml.setrans_setheta$se.orig)
+    )
+    df.remlwald[[ci_colname]] <- reml.est_wald.ci$CI
+    options(warn = old_warn)
     if (interval.method == "bootstrap") {
       if (verbose) message(sprintf("Running REML bootstrap (%d resamples)...", bootstrap.times))
-      REML.boot <- reml.param.boot(data, reml.res, bootstrap.times)
-      reml.res[[ci_colname]] <- sprintf("(%.3f, %.3f)", REML.boot$bootCI_lower, REML.boot$bootCI_upper)
-      reml.res <- reml.res[, c("Parameter", "Estimates", ci_colname)]  # hide se & Wald CI
+      remlboot.res <- reml_paramBoot(data,
+                                     reml.results = df.remlwald,
+                                     bootstrap.times = bootstrap.times,
+                                     pars.start = pars.start,
+                                     nleqslv.param = nleqslv.param,
+                                     alpha = alpha)
+      df.remlboot <- data.frame(
+        Parameter = param.names,
+        Estimates = reml.est_wald.ci$Estimates
+      )
+      df.remlboot[[ci_colname]] <- sprintf("(%.3f, %.3f)", remlboot.res$bootCI_lower, remlboot.res$bootCI_upper)
+      REML <- df.remlboot
     } else if (interval.method == "Wald") {
       if (verbose) message("Computing REML Wald CIs...")
-      colnames(reml.res) <- c("Parameter", "Estimates", "SE", ci_colname)
+      REML <- df.remlwald
     }
 
     text_summary <- paste0(
       "Point estimates obtained using Restricted Maximum Likelihood (REML). ",
-      sprintf("%s%% CI computed using the %s method%s.",
+      sprintf("%s%% confidence intervals computed using the %s method%s.",
               round((1 - alpha) * 100),
               interval.method,
               if (interval.method == "bootstrap") sprintf(" with %d bootstrap replicates", bootstrap.times) else "")
     )
-
-    return(list(Results = reml.res, Summary = text_summary))
+    return(list(Results = REML, Summary = text_summary))
   }
 }
 
 
 ### Not export
-ml.derivatives.gen <- function(data, x) {
+generate_data <- function(n, beta1, beta2, rho, psi1_2, psi2_2, se1, se2) {
+  stopifnot(length(se1) == n, length(se2) == n)
+  y1 <- numeric(n)
+  y2 <- numeric(n)
+  X <- matrix(1, nrow = n, ncol = 1)
+  s1_2 <- se1^2
+  s2_2 <- se2^2
+  for (i in 1:n) {
+    mu_i1 <- sum(X[i, ] * beta1)
+    mu_i2 <- sum(X[i, ] * beta2)
+
+    Sigma_i <- matrix(c(
+      psi1_2 + s1_2[i],
+      rho * sqrt((psi1_2 + s1_2[i]) * (psi2_2 + s2_2[i])),
+      rho * sqrt((psi1_2 + s1_2[i]) * (psi2_2 + s2_2[i])),
+      psi2_2 + s2_2[i]
+    ), nrow = 2)
+
+    obs <- MASS::mvrnorm(n = 1, mu = c(mu_i1, mu_i2), Sigma = Sigma_i)
+
+    y1[i] <- obs[1]
+    y2[i] <- obs[2]
+  }
+
+  return(list(y1 = y1, y2 = y2, se1 = se1, se2 = se2))
+}
+
+## ML
+ml_scores <- function(data, x) {
   p <- 1
   # Parameters
   beta1 <- x[1:p]
@@ -171,20 +274,24 @@ ml.derivatives.gen <- function(data, x) {
     rho / (1 - rho^2)^2 * sum(e1^2 / v1) -
     rho / (1 - rho^2)^2 * sum(e2^2 / v2) +
     (rho^2 + 1) / (1 - rho^2)^2 * sum(e1 * e2 / (sqrt_v1 * sqrt_v2))
-
-  res <- c(score1, score2, score3, score4, score5)
+  d_logpsi1 <- psi1_2 * score3      # *d/d log(psi1^2) by chain rule
+  d_logpsi2 <- psi2_2 * score4      # *d/d log(psi2^2) by chain rule
+  d_zrho    <- ((1 - rho^2) / 2) * score5   # *d/d z_rho by chain rule
+  res <- c(score1, score2, d_logpsi1, d_logpsi2, d_zrho)
   return(res)
 }
-ml.hessian.gen <- function(data, ml.est){
+
+##### Hessian
+ml_hessian <- function(data, ml.root){
   n <- length(data$y1)
   p <- 1
 
   # Parameters
-  beta1.hat <- ml.est[1:p]
-  beta2.hat <- ml.est[(p+1):(2*p)]
-  psi1_2.hat <- exp(ml.est[2*p + 1])
-  psi2_2.hat <- exp(ml.est[2*p + 2])
-  rho.hat <- (2 * plogis(ml.est[2*p + 3])) - 1  # inverse logit scaled to (-1, 1)
+  beta1.hat <- ml.root[1:p]
+  beta2.hat <- ml.root[(p+1):(2*p)]
+  psi1_2.hat <- exp(ml.root[2*p + 1])
+  psi2_2.hat <- exp(ml.root[2*p + 2])
+  rho.hat <- (2 * plogis(ml.root[2*p + 3])) - 1  # inverse logit scaled to (-1, 1)
 
   data$X <- matrix(1, nrow = n, ncol = 1)
 
@@ -232,10 +339,203 @@ ml.hessian.gen <- function(data, ml.est){
              c(h13, h23, h33, h34, h35),
              c(h14, h24, h34, h44, h45),
              c(h15, h25, h35, h45, h55))
-  return(list(est = c(beta1.hat, beta2.hat, psi1_2.hat, psi2_2.hat, rho.hat),
-              var = diag(solve(-H))))
+  J <- diag(c(rep(1, p*2), psi1_2.hat, psi2_2.hat, (1-rho.hat^2)/2 ))
+  H.trans <- t(J)%*%H%*%J
+  return(list(H.orig = H,
+              H.trans = H.trans)) # covariance matrix in the transformed scale
 }
-reml.derivatives.gen <- function(data, x) {
+freq_se <- function(hessians, ridge = 1e-6) {
+  H.orig.stable <- hessians$H.orig - diag(ridge, nrow(hessians$H.orig))
+  H.trans.stable <- hessians$H.trans - diag(ridge, nrow(hessians$H.trans))
+
+  se.original <- sqrt(diag(solve(-H.orig.stable)))
+  se.trans <- sqrt(diag(solve(-H.trans.stable)))
+
+  list(se.orig = se.original, se.trans = se.trans)
+}
+
+freq_WaldCI <- function(root, se.trans, alpha) {
+  p <- 1
+  z <- qnorm(1 - alpha/2)
+
+  # Parameter estimates
+  beta1 <- root[1]
+  beta2 <- root[2]
+  logpsi1 <- root[3]
+  logpsi2 <- root[4]
+  z_rho <- root[5]
+
+  # CI in transformed scale
+  lower <- c(beta1, beta2, logpsi1, logpsi2, z_rho) - z*se.trans
+  upper <- c(beta1, beta2, logpsi1, logpsi2, z_rho) + z*se.trans
+
+  # Back-transform
+  lower[3:4] <- exp(lower[3:4])
+  upper[3:4] <- exp(upper[3:4])
+  lower[5] <- 2*plogis(lower[5]) - 1
+  upper[5] <- 2*plogis(upper[5]) - 1
+
+  CI <- paste0("(", round(lower,3), ", ", round(upper,3), ")")
+
+  Estimates <- c(beta1, beta2, exp(logpsi1), exp(logpsi2), 2*plogis(z_rho)-1)
+
+  return(list(Estimates = Estimates, CI = CI))
+}
+
+ml_solve <- function(data, pars.start,
+                     verbose, nleqslv.param) {
+  # Default starting values
+  if (is.null(pars.start)) {
+    # Estimate initial psi variances by subtracting mean squared measurement error
+    v1_init <- var(data$y1) - mean(data$se1^2)
+    v2_init <- var(data$y2) - mean(data$se2^2)
+
+    # Make sure variances are positive
+    v1_init <- max(v1_init, 1e-3)
+    v2_init <- max(v2_init, 1e-3)
+
+    # Initial values for root solver
+    pars.start <- c(
+      mean(data$y1),   # beta1
+      mean(data$y2),   # beta2
+      log(v1_init),    # log(psi1^2)
+      log(v2_init),    # log(psi2^2)
+      0                # rho
+    )
+
+  }
+
+  if (!is.numeric(pars.start) || length(pars.start) != 5) {
+    stop("pars.start must be a numeric vector of length 5: (beta1, beta2, (log(psi1), log(psi2), tanh(rho/2))")
+  }
+
+  # Solve equations
+  res <- tryCatch({
+    nleqslv::nleqslv(
+      x = pars.start,
+      fn = ml_scores,
+      data = data,
+      method = nleqslv.param$method,
+      global = nleqslv.param$global,
+      control = nleqslv.param$control
+    )
+  }, error = function(e) {
+    if (verbose) message("nleqslv failed: ", e$message)
+    return(NULL)
+  })
+
+  # Check convergence
+  if (is.null(res) || res$termcd > 2 || any(abs(res$fvec) > 1e-5)) {  # 1 or 2 mean success
+    if (verbose) message("ml_solve(): did not converge. termcd = ", res$termcd)
+    return(NULL)
+  }
+
+  if (verbose) message("ml_solve(): converged successfully.")
+  return(res)
+}
+ml_paramBoot <- function(data, ml.results,
+                         bootstrap.times,
+                         pars.start,
+                         nleqslv.param,
+                         alpha) {
+  n <- length(data$y1)
+  p <- 1
+  if(is.null(pars.start)){
+    v1_init <- var(data$y1) - mean(data$se1^2)
+    v2_init <- var(data$y2) - mean(data$se2^2)
+    v1_init <- max(v1_init, 1e-3)
+    v2_init <- max(v2_init, 1e-3)
+    pars.start <- c(
+      mean(data$y1),   # beta1
+      mean(data$y2),   # beta2
+      log(v1_init),    # log(psi1^2)
+      log(v2_init),    # log(psi2^2)
+      0                # rho
+    )
+  }
+
+  beta1.est <- ml.results$Estimates[grepl("^beta1", ml.results$Parameter)]
+  beta2.est <- ml.results$Estimates[grepl("^beta2", ml.results$Parameter)]
+  psi1_2.est <- ml.results$Estimates[grepl("^psi1_2$", ml.results$Parameter)]
+  psi2_2.est <- ml.results$Estimates[grepl("^psi2_2$", ml.results$Parameter)]
+  rho.est <- ml.results$Estimates[grepl("^rho$", ml.results$Parameter)]
+
+  se1 <- (data$se1)
+  se2 <- (data$se2)
+  bootstrap.results <- list()
+  n.success <- 0
+  n.attempts <- 0
+
+  while (n.success < bootstrap.times) {
+    n.attempts <- n.attempts + 1
+
+    boot.data <- generate_data(n = n,
+                               beta1 = beta1.est, beta2 = beta2.est, rho = rho.est,
+                               psi1_2 = psi1_2.est, psi2_2 = psi2_2.est,
+                               se1 = se1, se2 = se2)
+
+    result <- tryCatch({
+      suppressWarnings({
+        invisible(capture.output({
+          out <- nleqslv::nleqslv(
+            x = pars.start,
+            fn = ml_scores,
+            data = boot.data,
+            method = nleqslv.param$method,
+            global = nleqslv.param$global,
+            control = nleqslv.param$control
+          )
+        }, type = "output"))
+
+        root <- out$x
+        if (!is.null(root) &&
+            all(out$fvec < 1e-6) &&
+            all(is.finite(root)) &&
+            all(abs(root) < 10) &&
+            out$termcd %in% c(1, 2)) {
+          root
+        } else {
+          NULL
+        }
+      })
+    }, error = function(e) NULL)
+
+    if (!is.null(result)) {
+      n.success <- n.success + 1
+      bootstrap.results[[n.success]] <- result
+    }
+  }
+
+  bootstrap.matrix <- do.call(rbind, bootstrap.results)
+
+  beta1.mat <- bootstrap.matrix[, 1:p, drop = FALSE]
+  beta2.mat <- bootstrap.matrix[, (p + 1):(2 * p), drop = FALSE]
+  psi1_2.vec <- exp(bootstrap.matrix[, 2 * p + 1])
+  psi2_2.vec <- exp(bootstrap.matrix[, 2 * p + 2])
+  rho.vec    <- 2 * plogis(bootstrap.matrix[, 2 * p + 3]) - 1
+
+  bootstrap.transformed <- cbind(beta1.mat, beta2.mat, psi1_2 = psi1_2.vec, psi2_2 = psi2_2.vec, rho = rho.vec)
+
+  bootstrap.mean <- colMeans(bootstrap.transformed)
+  bootstrap.se <- apply(bootstrap.transformed, 2, sd)
+  bootstrap.ci <- t(apply(bootstrap.transformed, 2, quantile, probs = c(alpha/2, 1 - alpha/2)))
+  colnames(bootstrap.ci) <- c("CI_lower", "CI_upper")
+
+  param.names <- c(paste0("beta1", 1:p),
+                   paste0("beta2", 1:p),
+                   "psi1_2", "psi2_2", "rho")
+
+  data.frame(
+    Parameter = param.names,
+    bootMean = bootstrap.mean,
+    bootSE = bootstrap.se,
+    bootCI_lower = bootstrap.ci[, 1],
+    bootCI_upper = bootstrap.ci[, 2]
+  )
+}
+
+## REML
+reml_scores <- function(data, x) {
   n <- length(data$y1)
   p <- 1
 
@@ -340,19 +640,22 @@ reml.derivatives.gen <- function(data, x) {
                    rho * ((y1 - mu1)^2 / (psi1_2 + s1_2) + (y2 - mu2)^2 / (psi2_2 + s2_2)) -
                      (1 + rho^2) * (y1 - mu1) * (y2 - mu2) / sqrt((psi1_2 + s1_2) * (psi2_2 + s2_2))
                  ))
+  d_logpsi1 <- psi1_2 * eq1      # *d/d log(psi1^2) by chain rule
+  d_logpsi2 <- psi2_2 * eq2      # *d/d log(psi2^2) by chain rule
+  d_zrho    <- ((1 - rho^2) / 2) * eq3  # *d/d z_rho by chain rule
 
-  return(c(eq1, eq2, eq3))
+  return(c(d_logpsi1, d_logpsi2, d_zrho))
 }
 
-reml.hessian.gen <- function(data, reml.est){
+reml_hessian <- function(data, reml.root){
   n <- length(data$y1)
   p <- 1
   X <- matrix(1, nrow = n, ncol = 1)
 
   # Parameters
-  psi1_2 <- exp(reml.est[1])
-  psi2_2 <- exp(reml.est[2])
-  rho <- (2 * plogis(reml.est[3])) - 1  # inverse logit scaled to (-1, 1)
+  psi1_2 <- exp(reml.root[1])
+  psi2_2 <- exp(reml.root[2])
+  rho <- (2 * plogis(reml.root[3])) - 1  # inverse logit scaled to (-1, 1)
 
   # Data
   y1 <- data$y1
@@ -525,186 +828,10 @@ reml.hessian.gen <- function(data, reml.est){
   hessian.reml[2,3] <- hessian.reml[3,2] <- d2_ell_R_psi2_2_rho
   hessian.reml[1,3] <- hessian.reml[3,1] <- d2_ell_R_psi1_2_rho
 
-  return(list(est = c(beta_hat, psi1_2, psi2_2, rho),
-              var = c(diag(inv_sum_xphix),
-                      diag(solve(-hessian.reml)))))
-}
-# xx is the output of .hessian.gen
-WaldCI.func <- function(xx, alpha) {
-  z <- qnorm(1 - alpha/2)
-
-  # beta
-  lower.beta <- xx$est[1:2] - z * sqrt(xx$var[1:2])
-  upper.beta <- xx$est[1:2] + z * sqrt(xx$var[1:2])
-
-  # psi^2 (log scale)
-  log.psi2 <- log(xx$est[3:4])
-  var.log.psi2 <- xx$var[3:4] / (xx$est[3:4]^2)
-  lower.psi2 <- exp(log.psi2 - z * sqrt(var.log.psi2))
-  upper.psi2 <- exp(log.psi2 + z * sqrt(var.log.psi2))
-
-  # rho (logit transform of (rho + 1)/2)
-  rho.transformed <- qlogis((xx$est[5] + 1)/2)
-  var.rho.transformed <- (2 / (1 - xx$est[5]^2))^2 * xx$var[5]
-  lower.rho.trans <- rho.transformed - z * sqrt(var.rho.transformed)
-  upper.rho.trans <- rho.transformed + z * sqrt(var.rho.transformed)
-  lower.rho <- 2 * plogis(lower.rho.trans) - 1
-  upper.rho <- 2 * plogis(upper.rho.trans) - 1
-
-  # combine
-  lower <- c(lower.beta, lower.psi2, lower.rho)
-  upper <- c(upper.beta, upper.psi2, upper.rho)
-  waldci <- sprintf("(%.3f, %.3f)", lower, upper)
-
-  return(waldci)
-}
-ml.solve <- function(data, pars.start = NULL, maxiter = 50, verbose = TRUE, alpha = 0.05) {
-  # Input checks
-  stopifnot(is.list(data))
-  required <- c("y1", "y2", "se1", "se2")
-  if (!all(required %in% names(data))) stop("data must contain y1, y2, se1, se2")
-  if (length(data$y1) != length(data$y2)) stop("y1 and y2 must have the same length")
-
-  p <- 1
-
-  # Default initial values
-  if (is.null(pars.start)) {
-    pars.start <- c(mean(data$y1), mean(data$y2),
-                    log(var(data$y1)), log(var(data$y2)), 0)
-  }
-
-  # Input check
-  if (!is.numeric(pars.start) || length(pars.start) != 5) {
-    stop("pars.start must be numeric vector of length 5: (beta1, beta2, psi1, psi2, rho)")
-  }
-
-  # Root solving
-  res <- tryCatch({
-    old_warn <- getOption("warn")
-    options(warn = 2)
-    on.exit(options(warn = old_warn), add = TRUE)
-
-    ml.root <- suppressMessages(suppressWarnings(
-      multiroot(
-        f = ml.derivatives.gen,
-        start = pars.start,
-        maxiter = maxiter,
-        atol = 1e-6,
-        data = data
-      )
-    ))
-
-    # Check convergence
-    if (is.null(ml.root$estim.precis) || is.na(ml.root$estim.precis) || ml.root$estim.precis >= 1e-6) {
-      if (verbose) message("ml.solve(): root finding did not converge.")
-      return(NULL)
-    }
-
-    # Theoretical variance and CI
-    ml.hessian.res <- ml.hessian.gen(data, ml.root$root)
-    ml.ci <- WaldCI.func(ml.hessian.res, alpha = alpha)
-
-    res <- data.frame(Parameter = c("beta1", "beta2", "psi1_2", "psi2_2", "rho"),
-                      Estimates = ml.hessian.res$est,
-                      SE = sqrt(ml.hessian.res$var),
-                      CI = ml.ci)
-
-    return(res)
-
-  }, error = function(e) {
-    if (verbose) {
-      message("ml.solve() error: ", conditionMessage(e))
-      tb <- capture.output(traceback())
-      message(paste(tb, collapse = "\n"))
-    }
-    return(NULL)
-  })
-
-  # Ensure consistent output
-  if (is.null(res)) {
-    return(data.frame(
-      Parameter = c("beta1", "beta2", "psi1_2", "psi2_2", "rho"),
-      Estimates = NA_real_,
-      SE = NA_real_,
-      CI = NA_character_
-    ))
-  }
-  return(res)
-}
-
-
-reml.solve <- function(data, pars.start = NULL, maxiter = 50, verbose = TRUE, alpha = 0.05) {
-  # Input checks
-  stopifnot(is.list(data))
-  required <- c("y1", "y2", "se1", "se2")
-  if (!all(required %in% names(data))) stop("data must contain y1, y2, se1, se2")
-  if (length(data$y1) != length(data$y2)) stop("y1 and y2 must have the same length")
-
-  p <- 1
-
-  # Default initial values
-  if (is.null(pars.start)) {
-    pars.start <- c(log(var(data$y1)), log(var(data$y2)), 0)
-  }
-
-  # Input check
-  if (!is.numeric(pars.start) || length(pars.start) != 3) {
-    stop("pars.start must be numeric vector of length 3: (psi1, psi2, rho)")
-  }
-
-  # Root solving
-  res <- tryCatch({
-    old_warn <- getOption("warn")
-    options(warn = 2)
-    on.exit(options(warn = old_warn), add = TRUE)
-
-    reml.root <- suppressMessages(suppressWarnings(
-      multiroot(
-        f = reml.derivatives.gen,
-        start = pars.start,
-        maxiter = maxiter,
-        atol = 1e-6,
-        data = data
-      )
-    ))
-
-    # Check convergence
-    if (is.null(reml.root$estim.precis) || is.na(reml.root$estim.precis) || reml.root$estim.precis >= 1e-6) {
-      if (verbose) message("reml.solve(): root finding did not converge.")
-      return(NULL)
-    }
-
-    # Theoretical variance and CI
-    reml.hessian.res <- reml.hessian.gen(data, reml.root$root)
-    reml.ci <- WaldCI.func(reml.hessian.res, alpha = alpha)
-
-    res <- data.frame(Parameter = c("beta1", "beta2", "psi1_2", "psi2_2", "rho"),
-                      Estimates = reml.hessian.res$est,
-                      SE = sqrt(reml.hessian.res$var),
-                      CI = reml.ci)
-
-    return(res)
-
-  }, error = function(e) {
-    if (verbose) {
-      message("reml.solve() error: ", conditionMessage(e))
-      tb <- capture.output(traceback())
-      message(paste(tb, collapse = "\n"))
-    }
-    return(NULL)
-  })
-
-  # Ensure consistent output
-  if (is.null(res)) {
-    return(data.frame(
-      Parameter = c("beta1", "beta2", "psi1_2", "psi2_2", "rho"),
-      Estimates = NA_real_,
-      SE = NA_real_,
-      CI = NA_character_
-    ))
-  }
-
-  return(res)
+  J <- diag(c(psi1_2, psi2_2, (1-rho^2)/2 ))
+  H.trans <- t(J)%*%hessian.reml%*%J
+  return(list(H.orig = hessian.reml,
+              H.trans = H.trans))
 }
 
 solve_remlBeta <- function(reml.root, data){
@@ -712,8 +839,8 @@ solve_remlBeta <- function(reml.root, data){
   p <- 1
   X <- matrix(1, nrow = n, ncol = 1)
   # Parameters
-  psi1_2 <- reml.root[1]^2
-  psi2_2 <- reml.root[2]^2
+  psi1_2 <- exp(reml.root[1])
+  psi2_2 <- exp(reml.root[2])
   rho <- (2 * plogis(reml.root[3])) - 1  # inverse logit scaled to (-1, 1)
 
   # Data
@@ -752,124 +879,75 @@ solve_remlBeta <- function(reml.root, data){
   sum_xphiy      <- Reduce("+", lapply(results, `[[`, "xphiy"))
   inv_sum_xphix <- solve(sum_xphix)
   beta_hat <- inv_sum_xphix %*% sum_xphiy
-  return(beta_hat)
+
+  return(list(beta_hat = as.vector(beta_hat),
+              se_beta_hat = sqrt(diag(inv_sum_xphix))))
 }
+reml_solve <- function(data,
+                       pars.start,
+                       verbose,
+                       nleqslv.param){
+  # Default starting values
+  if (is.null(pars.start)) {
+    v1_init <- var(data$y1) - mean(data$se1^2)
+    v2_init <- var(data$y2) - mean(data$se2^2)
+    v1_init <- max(v1_init, 1e-3)
+    v2_init <- max(v2_init, 1e-3)
+    pars.start <- c(
+      log(v1_init),    # log(psi1^2)
+      log(v2_init),    # log(psi2^2)
+      0                # rho
+    )
 
-# bootstrap codes
-generate.data.general <- function(n, beta1, beta2, rho, psi1_2, psi2_2, se1, se2) {
-  stopifnot(length(se1) == n, length(se2) == n)
-  y1 <- numeric(n)
-  y2 <- numeric(n)
-  X <- matrix(1, nrow = n, ncol = 1)
-  s1_2 <- se1^2
-  s2_2 <- se2^2
-  for (i in 1:n) {
-    mu_i1 <- sum(X[i, ] * beta1)
-    mu_i2 <- sum(X[i, ] * beta2)
-
-    Sigma_i <- matrix(c(
-      psi1_2 + s1_2[i],
-      rho * sqrt((psi1_2 + s1_2[i]) * (psi2_2 + s2_2[i])),
-      rho * sqrt((psi1_2 + s1_2[i]) * (psi2_2 + s2_2[i])),
-      psi2_2 + s2_2[i]
-    ), nrow = 2)
-
-    obs <- MASS::mvrnorm(n = 1, mu = c(mu_i1, mu_i2), Sigma = Sigma_i)
-
-    y1[i] <- obs[1]
-    y2[i] <- obs[2]
   }
 
-  return(list(y1 = y1, y2 = y2, se1 = se1, se2 = se2))
-}
-ml.param.boot <- function(data, ml.results, bootstrap.times, alpha = 0.05) {
-  n <- length(data$y1)
-  p <- 1
-  pars.start <- c(mean(data$y1), mean(data$y2), log(var(data$y1)), log(var(data$y2)), 0)
-
-  beta1.est <- ml.results$Estimates[grepl("^beta1", ml.results$Parameter)]
-  beta2.est <- ml.results$Estimates[grepl("^beta2", ml.results$Parameter)]
-  psi1_2.est <- ml.results$Estimates[grepl("^psi1_2$", ml.results$Parameter)]
-  psi2_2.est <- ml.results$Estimates[grepl("^psi2_2$", ml.results$Parameter)]
-  rho.est <- ml.results$Estimates[grepl("^rho$", ml.results$Parameter)]
-
-  se1 <- (data$se1)
-  se2 <- (data$se2)
-  bootstrap.results <- list()
-  n.success <- 0
-  n.attempts <- 0
-
-  while (n.success < bootstrap.times) {
-    n.attempts <- n.attempts + 1
-
-    ml.param.boot.samples <- generate.data.general(n = n,
-                                                   beta1 = beta1.est, beta2 = beta2.est, rho = rho.est,
-                                                   psi1_2 = psi1_2.est, psi2_2 = psi2_2.est,
-                                                   se1 = se1, se2 = se2)
-
-    result <- tryCatch({
-      suppressWarnings({
-        invisible(capture.output({
-          out <- multiroot(
-            f = ml.derivatives.gen,
-            start = pars.start,
-            maxiter = 20,
-            atol = 1e-6,
-            data = ml.param.boot.samples
-          )
-        }, type = "output"))
-
-        root <- out$root
-        if (!is.null(root) &&
-            out$estim.precis < 1e-6 &&
-            all(is.finite(root)) &&
-            all(abs(root) < 10)) {
-          root
-        } else {
-          NULL
-        }
-      })
-    }, error = function(e) NULL)
-
-    if (!is.null(result)) {
-      n.success <- n.success + 1
-      bootstrap.results[[n.success]] <- result
-    }
+  if (!is.numeric(pars.start) || length(pars.start) != 3) {
+    stop("pars.start must be a numeric vector of length 3: (log(psi1), log(psi2), tanh(rho/2))")
   }
 
-  bootstrap.matrix <- do.call(rbind, bootstrap.results)
+  # Solve equations
+  res <- tryCatch({
+    nleqslv::nleqslv(
+      x = pars.start,
+      fn = reml_scores,
+      data = data,
+      method = nleqslv.param$method,
+      global = nleqslv.param$global,
+      control = nleqslv.param$control
+    )
+  }, error = function(e) {
+    if (verbose) message("nleqslv failed: ", e$message)
+    return(NULL)
+  })
 
-  beta1.mat <- bootstrap.matrix[, 1:p, drop = FALSE]
-  beta2.mat <- bootstrap.matrix[, (p + 1):(2 * p), drop = FALSE]
-  psi1_2.vec <- exp(bootstrap.matrix[, 2 * p + 1])
-  psi2_2.vec <- exp(bootstrap.matrix[, 2 * p + 2])
-  rho.vec    <- 2 * plogis(bootstrap.matrix[, 2 * p + 3]) - 1
+  # Check convergence
+  if (is.null(res) || res$termcd > 2 || any(abs(res$fvec) > 1e-5)) {  # 1 or 2 mean success
+    if (verbose) message("reml_solve(): did not converge. termcd = ", res$termcd)
+    return(NULL)
+  }
 
-  bootstrap.transformed <- cbind(beta1.mat, beta2.mat, psi1_2 = psi1_2.vec, psi2_2 = psi2_2.vec, rho = rho.vec)
-
-  bootstrap.mean <- colMeans(bootstrap.transformed)
-  bootstrap.se <- apply(bootstrap.transformed, 2, sd)
-  bootstrap.ci <- t(apply(bootstrap.transformed, 2, quantile, probs = c(alpha/2, 1 - alpha/2)))
-  colnames(bootstrap.ci) <- c("CI_lower", "CI_upper")
-
-  param.names <- c(paste0("beta1", 1:p),
-                   paste0("beta2", 1:p),
-                   "psi1_2", "psi2_2", "rho")
-
-  data.frame(
-    Parameter = param.names,
-    bootMean = bootstrap.mean,
-    bootSE = bootstrap.se,
-    bootCI_lower = bootstrap.ci[, 1],
-    bootCI_upper = bootstrap.ci[, 2]
-  )
+  if (verbose) message("reml_solve(): converged successfully.")
+  return(res)
 }
 
-reml.param.boot <- function(data, reml.results, bootstrap.times, alpha = 0.05) {
-  pars.start <- c(log(var(data$y1)), log(var(data$y2)), 0)
-  p <- 1
+reml_paramBoot <- function(data, reml.results,
+                           bootstrap.times,
+                           pars.start,
+                           nleqslv.param,
+                           alpha) {
   n <- length(data$y1)
-
+  p <- 1
+  if(is.null(pars.start)){
+    v1_init <- var(data$y1) - mean(data$se1^2)
+    v2_init <- var(data$y2) - mean(data$se2^2)
+    v1_init <- max(v1_init, 1e-3)
+    v2_init <- max(v2_init, 1e-3)
+    pars.start <- c(
+      log(v1_init),    # log(psi1^2)
+      log(v2_init),    # log(psi2^2)
+      0                # rho
+    )
+  }
   beta1.est <- reml.results$Estimates[grepl("^beta1", reml.results$Parameter)]
   beta2.est <- reml.results$Estimates[grepl("^beta2", reml.results$Parameter)]
   psi1_2.est <- reml.results$Estimates[grepl("^psi1_2$", reml.results$Parameter)]
@@ -885,7 +963,7 @@ reml.param.boot <- function(data, reml.results, bootstrap.times, alpha = 0.05) {
 
   while (n.success < bootstrap.times) {
     n.attempts <- n.attempts + 1
-    boot.data <- generate.data.general(
+    boot.data <- generate_data(
       n = n,
       beta1 = beta1.est, beta2 = beta2.est, rho = rho.est,
       psi1_2 = psi1_2.est, psi2_2 = psi2_2.est,
@@ -895,24 +973,27 @@ reml.param.boot <- function(data, reml.results, bootstrap.times, alpha = 0.05) {
     result <- tryCatch({
       suppressWarnings({
         invisible(capture.output({
-          out <- multiroot(
-            f = reml.derivatives.gen,
-            start = pars.start,
-            maxiter = 20,
-            atol = 1e-6,
-            data = boot.data
+          out <- nleqslv::nleqslv(
+            x = pars.start,
+            fn = reml_scores,
+            data = boot.data,
+            method = nleqslv.param$method,
+            global = nleqslv.param$global,
+            control = nleqslv.param$control
           )
         }, type = "output"))
 
-        root <- out$root
-
+        root <- out$x
         if (!is.null(root) &&
-            out$estim.precis < 1e-6 &&
+            all(out$fvec < 1e-6) &&
             all(is.finite(root)) &&
-            all(abs(root) < 10)) {
+            all(abs(root) < 10) &&
+            out$termcd %in% c(1, 2)) {
           reml.beta <- solve_remlBeta(root, boot.data)
-          c(reml.beta, root)
-        } else NULL
+          c(reml.beta$beta_hat, root)
+        } else {
+          NULL
+        }
       })
     }, error = function(e) NULL)
 

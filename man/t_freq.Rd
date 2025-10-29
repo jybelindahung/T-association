@@ -10,6 +10,8 @@ t_freq(
   interval.method = c("auto", "Wald", "bootstrap"),
   bootstrap.times = 1000,
   pars.start = NULL,
+  nleqslv.param = list(method = "Broyden", control = list(maxit = 200, ftol = 1e-06, xtol
+    = 1e-06)),
   verbose = TRUE,
   alpha = 0.05
 )
@@ -27,6 +29,31 @@ Default is \code{"auto"}, which chooses appropriate method based on sample size.
 
 \item{pars.start}{Numeric vector of initial values for iterative parameter estimation. If \code{NULL}, data-driven initial values are used.}
 
+\item{nleqslv.param}{A list of control settings passed directly to
+  \code{\link[nleqslv]{nleqslv}} for solving the system of nonlinear equations
+  used to obtain point estimates.
+
+  The default is:
+  \preformatted{
+  list(
+    method = "Broyden",
+    control = list(maxit = 200, ftol = 1e-6, xtol = 1e-6)
+  )
+  }
+
+  The list typically includes:
+  \describe{
+    \item{\code{method}}{Character string specifying the numerical method used.
+      Common options include \code{"Broyden"}, \code{"Newton"}, or \code{"dfp"}.}
+    \item{\code{control}}{A list of algorithmic control parameters, such as
+      \code{maxit} (maximum number of iterations),
+      \code{ftol} (function tolerance), and
+      \code{xtol} (solution tolerance).}
+  }
+
+  For a complete description of available methods and control options,
+  see \code{\link[nleqslv]{nleqslv}}.}
+
 \item{verbose}{Logical. If \code{TRUE}, shows progress messages. Default is \code{TRUE}.}
 
 \item{alpha}{Numeric. Significance level for confidence intervals. Default is 0.05.}
@@ -43,10 +70,10 @@ A list with two elements:
 Computes point estimates and confidence intervals for the Bivariate Random-Effects Meta-Analysis (BRMA) model using frequentist methods.
 }
 \examples{
-data <- list(y1 = c(0.263, -0.007, 0.481, 1.006, 0.734, 0.436, 0.097, -0.191),
-             se1 = c(0.053, 0.032, 0.047, 0.037, 0.016, 0.072, 0.085, 0.074),
-             y2 = c(0.661, 0.777, 0.798, 1.061, 1.225, 0.728, 0.036, 0.610),
-             se2 = c(0.049, 0.023, 0.061, 0.065, 0.012, 0.034, 0.083, 0.080))
+data <- list(y1 = c(0.198, -0.091, 0.345, 1.193, 0.828, 1.671, 0.152, 1.416),
+             se1 = c(0.076, 0.081, 0.062, 0.387, 0.497, 0.195, 0.432, 0.254),
+             y2 = c(-0.234, -0.614, -0.054, -0.670, 0.105, 1.045, -0.910, 0.485),
+             se2 = c(0.465, 0.408, 0.240, 0.384, 0.239, 0.434, 0.141, 0.159))
 t_freq(data) # parameters estimated by REML;
              # confidence intervals constructed by bootstrap (sample size <10)
 t_freq(data, method = "ML", interval.method = "Wald", verbose = TRUE)
