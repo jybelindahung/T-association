@@ -17,8 +17,17 @@ t_freq(
 )
 }
 \arguments{
-\item{data}{A list containing transformed treatment effect estimates and corresponding standard errors for both endpoints.
-Required columns: `y1`, `se1`, `y2`, `se2`.}
+\item{data}{A list of numeric vectors containing transformed treatment effect estimates
+and corresponding standard errors for two endpoints (e.g., potential surrogate and true endpoint).
+Each vector must have length \eqn{n}, with elements ordered by study:
+\describe{
+  \item{y1}{Log-transformed effect estimates for endpoint 1.}
+  \item{se1}{Standard errors corresponding to \code{y1}.}
+  \item{y2}{Log-transformed effect estimates for endpoint 2.}
+  \item{se2}{Standard errors corresponding to \code{y2}.}
+}
+The four vectors must be aligned such that the \eqn{i}th elements of
+\code{y1}, \code{se1}, \code{y2}, and \code{se2} all refer to the same study.}
 
 \item{method}{Character string specifying the frequentist estimation method. Supported options: \code{c("REML" , "ML")}. Default is \code{"REML"}.}
 
