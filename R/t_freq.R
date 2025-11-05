@@ -2,9 +2,17 @@
 #' @description Computes point estimates and confidence intervals for the Bivariate Random-Effects Meta-Analysis (BRMA) model using frequentist methods.
 #' @importFrom nleqslv nleqslv
 #' @importFrom MASS mvrnorm
-
-#' @param data A list containing transformed treatment effect estimates and corresponding standard errors for both endpoints.
-#'             Required columns: `y1`, `se1`, `y2`, `se2`.
+#' @param data A list of numeric vectors containing transformed treatment effect estimates
+#'   and corresponding standard errors for two endpoints (e.g., potential surrogate and true endpoint).
+#'   Each vector must have length \eqn{n}, with elements ordered by study:
+#'   \describe{
+#'     \item{y1}{Log-transformed effect estimates for endpoint 1.}
+#'     \item{se1}{Standard errors corresponding to \code{y1}.}
+#'     \item{y2}{Log-transformed effect estimates for endpoint 2.}
+#'     \item{se2}{Standard errors corresponding to \code{y2}.}
+#'   }
+#'   The four vectors must be aligned such that the \eqn{i}th elements of
+#'   \code{y1}, \code{se1}, \code{y2}, and \code{se2} all refer to the same study.
 #' @param method Character string specifying the frequentist estimation method. Supported options: \code{c("REML" , "ML")}. Default is \code{"REML"}.
 #' @param interval.method Character string specifying the method to construct confidence intervals. Supported options: \code{c("wald", "bootstrap", "auto")}.
 #'                        Default is \code{"auto"}, which chooses appropriate method based on sample size.
@@ -537,301 +545,294 @@ ml_paramBoot <- function(data, ml.results,
 ## REML
 reml_scores <- function(data, x) {
   n <- length(data$y1)
-  p <- 1
 
-  # Parameters
+  # Transform parameters
   psi1_2 <- exp(x[1])
   psi2_2 <- exp(x[2])
-  rho <- (2 * plogis(x[3])) - 1  # inverse logit scaled to (-1, 1)
+  rho <- 2 * plogis(x[3]) - 1  # scale to (-1,1)
 
   # Data
   y1 <- data$y1
   y2 <- data$y2
-  s1_2 <- (data$se1)^2
-  s2_2 <- (data$se2)^2
-  X1 <- X2 <- X <- data$X <- matrix(1, ncol = 1, nrow = n)
+  s1_2 <- data$se1^2
+  s2_2 <- data$se2^2
+  X <- matrix(1, nrow = n, ncol = 1)  # scalar intercept per i
 
-  # function for a single observation
-  compute_matrices <- function(i) {
-    s1 <- s1_2[i]
-    s2 <- s2_2[i]
-    psi1s <- psi1_2 + s1
-    psi2s <- psi2_2 + s2
+  # Initialize sums for beta
+  sum_Xt_PhiInv_X <- matrix(0, nrow = 2, ncol = 2)
+  sum_Xt_PhiInv_y <- matrix(0, nrow = 2, ncol = 1)
+
+  # Store Phi_i, Phi_inv, derivatives for later
+  Phi_list <- vector("list", n)
+  Phi_inv_list <- vector("list", n)
+  dPhi1_list <- vector("list", n)
+  dPhi2_list <- vector("list", n)
+  dPhiR_list <- vector("list", n)
+
+  for (i in 1:n) {
+    psi1s <- psi1_2 + s1_2[i]
+    psi2s <- psi2_2 + s2_2[i]
     sqrt_psi1s <- sqrt(psi1s)
     sqrt_psi2s <- sqrt(psi2s)
-    rho_sqrt <- rho * sqrt_psi1s * sqrt_psi2s
 
-    # Covariance matrix and its inverse
-    Phi <- matrix(c(psi1s, rho_sqrt, rho_sqrt, psi2s), nrow = 2)
-    Phi.inv <- solve(Phi)
+    # Phi_i
+    Phi_i <- matrix(c(psi1s, rho * sqrt_psi1s * sqrt_psi2s,
+                      rho * sqrt_psi1s * sqrt_psi2s, psi2s), nrow = 2)
+    Phi_inv <- solve(Phi_i)
 
-    # Derivatives of Phi
-    Phi.psi1 <- matrix(c(
-      1, 0.5 * rho * sqrt_psi2s / sqrt_psi1s,
-      0.5 * rho * sqrt_psi2s / sqrt_psi1s, 0
-    ), nrow = 2)
+    # Store
+    Phi_list[[i]] <- Phi_i
+    Phi_inv_list[[i]] <- Phi_inv
 
-    Phi.psi2 <- matrix(c(
-      0, 0.5 * rho * sqrt_psi1s / sqrt_psi2s,
-      0.5 * rho * sqrt_psi1s / sqrt_psi2s, 1
-    ), nrow = 2)
+    # Derivatives
+    dPhi1_list[[i]] <- matrix(c(
+      1, rho * psi2s / (2 * sqrt_psi1s * sqrt_psi2s),
+      rho * psi2s / (2 * sqrt_psi1s * sqrt_psi2s), 0
+    ), 2, 2)
 
-    Phi.rho <- matrix(c(
+    dPhi2_list[[i]] <- matrix(c(
+      0, rho * psi1s / (2 * sqrt_psi1s * sqrt_psi2s),
+      rho * psi1s / (2 * sqrt_psi1s * sqrt_psi2s), 1
+    ), 2, 2)
+
+    dPhiR_list[[i]] <- matrix(c(
       0, sqrt_psi1s * sqrt_psi2s,
       sqrt_psi1s * sqrt_psi2s, 0
-    ), nrow = 2)
+    ), 2, 2)
 
-    # Kronecker product and related matrix operations
-    x <- t(kronecker(diag(2), X[i, ]))
-    y <- matrix(c(y1[i], y2[i]), nrow = 2)
-    xPhiInv <- t(x) %*% Phi.inv
-
-    list(
-      xphix       = xPhiInv %*% x,
-      xphiy       = xPhiInv %*% y,
-      xphip1phix  = xPhiInv %*% Phi.psi1 %*% Phi.inv %*% x,
-      xphip2phix  = xPhiInv %*% Phi.psi2 %*% Phi.inv %*% x,
-      xphiprphix  = xPhiInv %*% Phi.rho %*% Phi.inv %*% x
-    )
+    # Contributions to Xt_PhiInv_X and Xt_PhiInv_y
+    X_i <- t(kronecker(diag(2), X[i, ]))  # intercept
+    y_i <- matrix(c(y1[i], y2[i]), nrow = 2)
+    sum_Xt_PhiInv_X <- sum_Xt_PhiInv_X + t(X_i) %*% Phi_inv %*% X_i
+    sum_Xt_PhiInv_y <- sum_Xt_PhiInv_y + t(X_i) %*% Phi_inv %*% y_i
   }
 
-  # Compute all results
-  results <- lapply(1:n, compute_matrices)
+  # Estimate beta_hat
+  beta_hat <- solve(sum_Xt_PhiInv_X) %*% sum_Xt_PhiInv_y
 
-  # Reduce sums
-  sum_xphix      <- Reduce("+", lapply(results, `[[`, "xphix"))
-  sum_xphiy      <- Reduce("+", lapply(results, `[[`, "xphiy"))
-  sum_xphip1phix <- Reduce("+", lapply(results, `[[`, "xphip1phix"))
-  sum_xphip2phix <- Reduce("+", lapply(results, `[[`, "xphip2phix"))
-  sum_xphiprphix <- Reduce("+", lapply(results, `[[`, "xphiprphix"))
+  # Initialize scores
+  score_psi1 <- 0
+  score_psi2 <- 0
+  score_rho  <- 0
 
-  inv_sum_xphix <- solve(sum_xphix)
-
-  # Estimator of beta and gradients
-  beta_hat <- inv_sum_xphix %*% sum_xphiy
-  grad_psi1 <- -sum(diag(inv_sum_xphix %*% sum_xphip1phix))
-  grad_psi2 <- -sum(diag(inv_sum_xphix %*% sum_xphip2phix))
-  grad_rho  <- -sum(diag(inv_sum_xphix %*% sum_xphiprphix))
-
-  mu1 <- c()
-  mu2 <- c()
+  # Compute score contributions per i
   for (i in 1:n) {
-    mu <- t(kronecker(diag(2), X[i,]))%*%beta_hat
-    mu1 <- c(mu1, mu[1])
-    mu2 <- c(mu2, mu[2])
+    X_i <- t(kronecker(diag(2), X[i, ]))
+    y_i <- matrix(c(y1[i], y2[i]), nrow = 2)
+    Phi_i <- Phi_list[[i]]
+    Phi_inv <- Phi_inv_list[[i]]
+    dPhi1 <- dPhi1_list[[i]]
+    dPhi2 <- dPhi2_list[[i]]
+    dPhiR <- dPhiR_list[[i]]
+
+    resid_i <- y_i - X_i %*% beta_hat
+
+    # term1: trace(Phi_i^{-1} dPhi_i/dtheta)
+    term1_psi1 <- sum(diag(Phi_inv %*% dPhi1))
+    term1_psi2 <- sum(diag(Phi_inv %*% dPhi2))
+    term1_rho  <- sum(diag(Phi_inv %*% dPhiR))
+
+    # term2: trace((X'Phi^{-1}X)^{-1} X' Phi^{-1} dPhi Phi^{-1} X)
+    term2_psi1 <- sum(diag(solve(sum_Xt_PhiInv_X) %*% t(X_i) %*% Phi_inv %*% dPhi1 %*% Phi_inv %*% X_i))
+    term2_psi2 <- sum(diag(solve(sum_Xt_PhiInv_X) %*% t(X_i) %*% Phi_inv %*% dPhi2 %*% Phi_inv %*% X_i))
+    term2_rho  <- sum(diag(solve(sum_Xt_PhiInv_X) %*% t(X_i) %*% Phi_inv %*% dPhiR %*% Phi_inv %*% X_i))
+
+    # term3: resid' Phi^{-1} dPhi Phi^{-1} resid
+    term3_psi1 <- t(resid_i) %*% Phi_inv %*% dPhi1 %*% Phi_inv %*% resid_i
+    term3_psi2 <- t(resid_i) %*% Phi_inv %*% dPhi2 %*% Phi_inv %*% resid_i
+    term3_rho  <- t(resid_i) %*% Phi_inv %*% dPhiR %*% Phi_inv %*% resid_i
+
+    # add contribution to scores
+    score_psi1 <- score_psi1 - 0.5 * (term1_psi1 - term2_psi1 - term3_psi1)
+    score_psi2 <- score_psi2 - 0.5 * (term1_psi2 - term2_psi2 - term3_psi2)
+    score_rho  <- score_rho  - 0.5 * (term1_rho  - term2_rho  - term3_rho)
   }
 
-  A <- sum(1 / (psi1_2 + s1_2))
-  B <- sum(1 / (psi2_2 + s2_2))
-  C <- sum(rho / sqrt((psi1_2 + s1_2) * (psi2_2 + s2_2)))
-
-
-  eq1 <- -0.5*(A + grad_psi1 -
-                 sum((y1 - mu1)^2 / ((1 - rho^2) * (psi1_2 + s1_2)^2)) +
-                 sum(rho * (y1 - mu1) * (y2 - mu2) / ((1 - rho^2) * (psi1_2 + s1_2)^(3/2) * (psi2_2 + s2_2)^(1/2))))
-
-  eq2 <- -0.5*(B + grad_psi2 -
-                 sum((y2 - mu2)^2 / ((1 - rho^2) * (psi2_2 + s2_2)^2)) +
-                 sum(rho * (y1 - mu1) * (y2 - mu2) / ((1 - rho^2) * (psi1_2 + s1_2)^(1/2) * (psi2_2 + s2_2)^(3/2))))
-
-  eq3 <- -0.5*(-2 * rho * (n) / (1 - rho^2) +
-                 grad_rho +
-                 2 / (1 - rho^2)^2 * sum(
-                   rho * ((y1 - mu1)^2 / (psi1_2 + s1_2) + (y2 - mu2)^2 / (psi2_2 + s2_2)) -
-                     (1 + rho^2) * (y1 - mu1) * (y2 - mu2) / sqrt((psi1_2 + s1_2) * (psi2_2 + s2_2))
-                 ))
-  d_logpsi1 <- psi1_2 * eq1      # *d/d log(psi1^2) by chain rule
-  d_logpsi2 <- psi2_2 * eq2      # *d/d log(psi2^2) by chain rule
-  d_zrho    <- ((1 - rho^2) / 2) * eq3  # *d/d z_rho by chain rule
+  # chain rule for transformed parameters
+  d_logpsi1 <- psi1_2 * score_psi1
+  d_logpsi2 <- psi2_2 * score_psi2
+  d_zrho    <- 0.5 * (1 - rho^2) * score_rho
 
   return(c(d_logpsi1, d_logpsi2, d_zrho))
 }
 
-reml_hessian <- function(data, reml.root){
-  n <- length(data$y1)
-  p <- 1
-  X <- matrix(1, nrow = n, ncol = 1)
+reml_hessian <- function(data, reml.root) {
+  # Extract data
+  y1 <- data$y1
+  y2 <- data$y2
+  s1_2 <- data$se1^2
+  s2_2 <- data$se2^2
+  n <- length(y1)
+
+  # Design matrix (intercept-only)
+  X <- matrix(1, n, 1)
+  p <- ncol(X)
 
   # Parameters
   psi1_2 <- exp(reml.root[1])
   psi2_2 <- exp(reml.root[2])
-  rho <- (2 * plogis(reml.root[3])) - 1  # inverse logit scaled to (-1, 1)
+  rho <- (2 * plogis(reml.root[3])) - 1
+  beta_hat <- solve_remlBeta(reml.root = reml.root,
+                             data = data)$beta_hat
 
-  # Data
-  y1 <- data$y1
-  y2 <- data$y2
-  s1_2 <- (data$se1)^2
-  s2_2 <- (data$se2)^2
-
-  compute_matrices.second <- function(i) {
+  compute_matrices.hessian <- function(i) {
+    # Subject-specific variances
     s1 <- s1_2[i]
     s2 <- s2_2[i]
     psi1s <- psi1_2 + s1
     psi2s <- psi2_2 + s2
     sqrt_psi1s <- sqrt(psi1s)
     sqrt_psi2s <- sqrt(psi2s)
-    rho_sqrt <- rho * sqrt_psi1s * sqrt_psi2s
 
-    # Covariance matrix and its inverse
-    Phi <- matrix(c(psi1s, rho_sqrt, rho_sqrt, psi2s), nrow = 2)
+    # Covariance matrix
+    Phi <- matrix(c(psi1s, rho*sqrt_psi1s*sqrt_psi2s,
+                    rho*sqrt_psi1s*sqrt_psi2s, psi2s), nrow = 2)
     Phi.inv <- solve(Phi)
 
-    # First derivatives of Phi
-    Phi.psi1 <- matrix(c(
-      1, 0.5 * rho * sqrt_psi2s / sqrt_psi1s,
-      0.5 * rho * sqrt_psi2s / sqrt_psi1s, 0
-    ), nrow = 2)
+    # First derivatives
+    Phi.psi1 <- matrix(c(1, 0.5*rho*sqrt_psi2s/sqrt_psi1s,
+                         0.5*rho*sqrt_psi2s/sqrt_psi1s, 0), 2)
+    Phi.psi2 <- matrix(c(0, 0.5*rho*sqrt_psi1s/sqrt_psi2s,
+                         0.5*rho*sqrt_psi1s/sqrt_psi2s, 1), 2)
+    Phi.rho  <- matrix(c(0, sqrt_psi1s*sqrt_psi2s,
+                         sqrt_psi1s*sqrt_psi2s, 0), 2)
 
-    Phi.psi2 <- matrix(c(
-      0, 0.5 * rho * sqrt_psi1s / sqrt_psi2s,
-      0.5 * rho * sqrt_psi1s / sqrt_psi2s, 1
-    ), nrow = 2)
+    # Second derivatives
+    Phi.psi1psi1 <- matrix(c(0, -0.25*rho*sqrt_psi2s/(sqrt_psi1s^3),
+                             -0.25*rho*sqrt_psi2s/(sqrt_psi1s^3), 0), 2)
+    Phi.psi2psi2 <- matrix(c(0, -0.25*rho*sqrt_psi1s/(sqrt_psi2s^3),
+                             -0.25*rho*sqrt_psi1s/(sqrt_psi2s^3), 0), 2)
+    Phi.psi1psi2 <- matrix(c(0, 0.25*rho/(sqrt_psi1s*sqrt_psi2s),
+                             0.25*rho/(sqrt_psi1s*sqrt_psi2s), 0), 2)
+    Phi.psi1rho  <- matrix(c(0, 0.5*sqrt_psi2s/sqrt_psi1s,
+                             0.5*sqrt_psi2s/sqrt_psi1s, 0), 2)
+    Phi.psi2rho  <- matrix(c(0, 0.5*sqrt_psi1s/sqrt_psi2s,
+                             0.5*sqrt_psi1s/sqrt_psi2s, 0), 2)
+    Phi.rhorho   <- matrix(0, 2, 2)
 
-    Phi.rho <- matrix(c(
-      0, sqrt_psi1s * sqrt_psi2s,
-      sqrt_psi1s * sqrt_psi2s, 0
-    ), nrow = 2)
-
-    # Second derivatives of Phi
-    Phi.psi1psi1 <- matrix(c(
-      0, -0.25 * rho * sqrt_psi2s / (sqrt_psi1s^3),
-      -0.25 * rho * sqrt_psi2s / (sqrt_psi1s^3), 0
-    ), nrow = 2)
-
-    Phi.psi1psi2 <- matrix(c(
-      0, 0.25 * rho / sqrt_psi2s / sqrt_psi1s,
-      0.25 * rho / sqrt_psi2s / sqrt_psi1s, 0
-    ), nrow = 2)
-
-    Phi.psi1rho <- matrix(c(
-      0, 0.5 * sqrt_psi2s / sqrt_psi1s,
-      0.5 * sqrt_psi2s / sqrt_psi1s, 0
-    ), nrow = 2)
-
-    Phi.psi2psi2 <- matrix(c(
-      0, -0.25 * rho * sqrt_psi1s / (sqrt_psi2s^3),
-      -0.25 * rho * sqrt_psi1s / (sqrt_psi2s^3), 0
-    ), nrow = 2)
-
-    Phi.psi2rho <- matrix(c(
-      0, 0.5 * sqrt_psi1s / sqrt_psi2s,
-      0.5 * sqrt_psi1s / sqrt_psi2s, 0
-    ), nrow = 2)
-
-    Phi.rhorho <- matrix(c(
-      0, 0,
-      0, 0
-    ), nrow = 2)
-
-    # Kronecker product and related matrix operations
-    x <- t(kronecker(diag(2), X[i, ]))
+    # Stack y vector
     y <- matrix(c(y1[i], y2[i]), nrow = 2)
-    xPhiInv <- t(x) %*% Phi.inv
+    x <- X[i,,drop=FALSE]  # p x 1
+    x <- kronecker(diag(2), x)
 
-    qpsi1psi1 = -Phi.inv %*% Phi.psi1 %*% Phi.inv %*% Phi.psi1 %*% Phi.inv - Phi.inv %*% Phi.psi1 %*% Phi.inv %*% Phi.psi1 %*% Phi.inv + Phi.inv %*% Phi.psi1psi1 %*% Phi.inv
-    qpsi1psi2 = -Phi.inv %*% Phi.psi1 %*% Phi.inv %*% Phi.psi2 %*% Phi.inv - Phi.inv %*% Phi.psi2 %*% Phi.inv %*% Phi.psi1 %*% Phi.inv + Phi.inv %*% Phi.psi1psi2 %*% Phi.inv
-    qpsi1rho = -Phi.inv %*% Phi.psi1 %*% Phi.inv %*% Phi.rho %*% Phi.inv - Phi.inv %*% Phi.rho %*% Phi.inv %*% Phi.psi1 %*% Phi.inv + Phi.inv %*% Phi.psi1rho %*% Phi.inv
-    qpsi2psi2 = -Phi.inv %*% Phi.psi2 %*% Phi.inv %*% Phi.psi2 %*% Phi.inv - Phi.inv %*% Phi.psi2 %*% Phi.inv %*% Phi.psi2 %*% Phi.inv + Phi.inv %*% Phi.psi2psi2 %*% Phi.inv
-    qpsi2rho = -Phi.inv %*% Phi.psi2 %*% Phi.inv %*% Phi.rho %*% Phi.inv - Phi.inv %*% Phi.rho %*% Phi.inv %*% Phi.psi2 %*% Phi.inv + Phi.inv %*% Phi.psi2rho %*% Phi.inv
-    qrhorho = -Phi.inv %*% Phi.rho %*% Phi.inv %*% Phi.rho %*% Phi.inv - Phi.inv %*% Phi.rho %*% Phi.inv %*% Phi.rho %*% Phi.inv + Phi.inv %*% Phi.rhorho %*% Phi.inv
+    # Precompute repeated terms for Hessian
+    xPhiInv <- t(x) %*% Phi.inv
+    yres <- y - x %*% matrix(beta_hat, ncol=1)
 
     list(
-      xphix       = xPhiInv %*% x,
-      xphiy       = xPhiInv %*% y,
-      xphip1phix  = xPhiInv %*% Phi.psi1 %*% Phi.inv %*% x,
-      xphip2phix  = xPhiInv %*% Phi.psi2 %*% Phi.inv %*% x,
-      xphiprphix  = xPhiInv %*% Phi.rho %*% Phi.inv %*% x,
-      xqpsi1psi1x = t(x) %*% qpsi1psi1 %*% x,
-      xqpsi1psi2x = t(x) %*% qpsi1psi2 %*% x,
-      xqpsi1rhox  = t(x) %*% qpsi1rho %*% x,
-      xqpsi2psi2x = t(x) %*% qpsi2psi2 %*% x,
-      xqpsi2rhox  = t(x) %*% qpsi2rho %*% x,
-      xqrhorhox   = t(x) %*% qrhorho %*% x
+      x = x,
+      y = y,
+      Phi = Phi,
+      Phi.inv = Phi.inv,
+      Phi.derivatives = list(psi1 = Phi.psi1, psi2 = Phi.psi2, rho = Phi.rho),
+      Phi.second = list(
+        psi1psi1 = Phi.psi1psi1, psi2psi2 = Phi.psi2psi2, psi1psi2 = Phi.psi1psi2,
+        psi1rho = Phi.psi1rho, psi2rho = Phi.psi2rho, rhorho = Phi.rhorho
+      ),
+      xPhiInv = xPhiInv,
+      yres = yres
     )
   }
-  # Compute all results
-  results <- lapply(1:n, compute_matrices.second)
 
-  # Reduce sums
-  sum_xphix      <- Reduce("+", lapply(results, `[[`, "xphix"))
-  sum_xphiy      <- Reduce("+", lapply(results, `[[`, "xphiy"))
-  sum_xphip1phix <- Reduce("+", lapply(results, `[[`, "xphip1phix"))
-  sum_xphip2phix <- Reduce("+", lapply(results, `[[`, "xphip2phix"))
-  sum_xphiprphix <- Reduce("+", lapply(results, `[[`, "xphiprphix"))
-
-  sum_xqpsi1psi1x<- Reduce("+", lapply(results, `[[`, "xqpsi1psi1x"))
-  sum_xqpsi1psi2x <- Reduce("+", lapply(results, `[[`, "xqpsi1psi2x"))
-  sum_xqpsi1rhox <- Reduce("+", lapply(results, `[[`, "xqpsi1rhox"))
-  sum_xqpsi2psi2x <- Reduce("+", lapply(results, `[[`, "xqpsi2psi2x"))
-  sum_xqpsi2rhox <- Reduce("+", lapply(results, `[[`, "xqpsi2rhox"))
-  sum_xqrhorhox <- Reduce("+", lapply(results, `[[`, "xqrhorhox"))
-
-  inv_sum_xphix <- solve(sum_xphix)
-  beta_hat <- inv_sum_xphix %*% sum_xphiy
-  grad_psi1psi1 <- -sum(diag(inv_sum_xphix %*% sum_xphip1phix %*% inv_sum_xphix %*% sum_xphip1phix)) - sum(diag(inv_sum_xphix %*% sum_xqpsi1psi1x))
-  grad_psi1psi2 <- -sum(diag(inv_sum_xphix %*% sum_xphip1phix %*% inv_sum_xphix %*% sum_xphip2phix)) - sum(diag(inv_sum_xphix %*% sum_xqpsi1psi2x))
-  grad_psi1rho <- -sum(diag(inv_sum_xphix %*% sum_xphip1phix %*% inv_sum_xphix %*% sum_xphiprphix)) - sum(diag(inv_sum_xphix %*% sum_xqpsi1rhox))
-  grad_psi2psi2 <- -sum(diag(inv_sum_xphix %*% sum_xphip2phix %*% inv_sum_xphix %*% sum_xphip2phix)) - sum(diag(inv_sum_xphix %*% sum_xqpsi2psi2x))
-  grad_psi2rho <- -sum(diag(inv_sum_xphix %*% sum_xphip2phix %*% inv_sum_xphix %*% sum_xphiprphix)) - sum(diag(inv_sum_xphix %*% sum_xqpsi2rhox))
-  grad_rhorho <- -sum(diag(inv_sum_xphix %*% sum_xphiprphix %*% inv_sum_xphix %*% sum_xphiprphix)) - sum(diag(inv_sum_xphix %*% sum_xqrhorhox))
-
-  # calculate mu1 and mu2
-  mu1 <- c()
-  mu2 <- c()
-  for (i in 1:n) {
-    mu <- t(kronecker(diag(2), X[i,]))%*%beta_hat
-    mu1 <- c(mu1, mu[1])
-    mu2 <- c(mu2, mu[2])
+  compute_matrices <- lapply(1:n, compute_matrices.hessian)
+  sum_xPhiInvX <- matrix(0, p*2, p*2)
+  sum_xPhiInvY <- matrix(0, p*2, 1)
+  sum_xPhipsi1Phix <- matrix(0, p*2, p*2)
+  sum_xPhipsi2Phix <- matrix(0, p*2, p*2)
+  sum_xPhirhoPhix <- matrix(0, p*2, p*2)
+  sum_dbetapsi1term2 <- 0
+  sum_dbetapsi2term2 <- 0
+  sum_dbetarhoterm2 <- 0
+  for(i in 1:n) {
+    res <- compute_matrices[[i]]
+    sum_xPhiInvX <- sum_xPhiInvX + t(res$x) %*% res$Phi.inv %*% res$x
+    sum_xPhiInvY <- sum_xPhiInvY + t(res$x) %*% res$Phi.inv %*% res$y
+    sum_xPhipsi1Phix <- sum_xPhipsi1Phix + t(res$x) %*% res$Phi.inv %*% res$Phi.derivatives$psi1 %*% res$Phi.inv %*% res$x
+    sum_xPhipsi2Phix <- sum_xPhipsi2Phix + t(res$x) %*% res$Phi.inv %*% res$Phi.derivatives$psi2 %*% res$Phi.inv %*% res$x
+    sum_xPhirhoPhix <- sum_xPhirhoPhix + t(res$x) %*% res$Phi.inv %*% res$Phi.derivatives$rho %*% res$Phi.inv %*% res$x
+    sum_dbetapsi1term2 <- sum_dbetapsi1term2 + t(res$x) %*% res$Phi.inv %*% res$Phi.derivatives$psi1 %*% res$Phi.inv %*% res$yres
+    sum_dbetapsi2term2 <- sum_dbetapsi2term2 + t(res$x) %*% res$Phi.inv %*% res$Phi.derivatives$psi2 %*% res$Phi.inv %*% res$yres
+    sum_dbetarhoterm2 <- sum_dbetarhoterm2 + t(res$x) %*% res$Phi.inv %*% res$Phi.derivatives$rho %*% res$Phi.inv %*% res$yres
   }
+  dbeta_dpsi1 <- -solve(sum_xPhiInvX) %*% sum_dbetapsi1term2
+  dbeta_dpsi2 <- -solve(sum_xPhiInvX) %*% sum_dbetapsi2term2
+  dbeta_drho <- -solve(sum_xPhiInvX) %*% sum_dbetarhoterm2
 
-  # Compute d2_ell_R_psi1_2_2
-  term1_psi1_2_2 <- sum(1 / (psi1_2 + s1_2)^2)
-  term4_psi1_2_2 <- sum((y1 - mu1)^2 / ((1 - rho^2) * (psi1_2 + s1_2)^3))
-  term5_psi1_2_2 <- (3/2) * sum(rho * (y1 - mu1) * (y2 - mu2) / ((1 - rho^2) * (psi1_2 + s1_2)^(5/2) * (psi2_2 + s2_2)^(1/2)))
+  Hpsi1psi1 <- 0
+  Hpsi1psi2 <- 0
+  Hpsi1rho <- 0
+  Hpsi2psi2 <- 0
+  Hpsi2rho <- 0
+  Hrhorho <- 0
+  for (i in 1:n) {
+    res <- compute_matrices[[i]]
+    Hpsi1psi1 <- Hpsi1psi1 - 0.5*(sum(diag(res$Phi.inv%*%res$Phi.second$psi1psi1)) - sum(diag(res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$Phi.derivatives$psi1))-
+                                    sum(diag(solve(sum_xPhiInvX)%*%sum_xPhipsi1Phix%*%solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$x))-
+                                    sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.second$psi1psi1%*%res$Phi.inv%*%res$x))+
+                                    sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$x))+
+                                    sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$x))+
+                                    2*t(res$yres)%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$x%*%dbeta_dpsi1-
+                                    t(res$yres)%*%(-res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv-
+                                                     res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv+
+                                                     res$Phi.inv%*%res$Phi.second$psi1psi1%*%res$Phi.inv)%*%res$yres)
+    Hpsi1psi2 <- Hpsi1psi2 - 0.5*(sum(diag(res$Phi.inv%*%res$Phi.second$psi1psi2)) - sum(diag(res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$Phi.derivatives$psi2))-
+                                    sum(diag(solve(sum_xPhiInvX)%*%sum_xPhipsi1Phix%*%solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$x))-
+                                    sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.second$psi1psi2%*%res$Phi.inv%*%res$x))+
+                                    sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$x))+
+                                    sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$x))+
+                                    2*t(res$yres)%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$x%*%dbeta_dpsi1-
+                                    t(res$yres)%*%(-res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv-
+                                                     res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv+
+                                                     res$Phi.inv%*%res$Phi.second$psi1psi2%*%res$Phi.inv)%*%res$yres)
+    Hpsi1rho <- Hpsi1rho - 0.5*(sum(diag(res$Phi.inv%*%res$Phi.second$psi1rho)) - sum(diag(res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$Phi.derivatives$rho))-
+                                  sum(diag(solve(sum_xPhiInvX)%*%sum_xPhipsi1Phix%*%solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$x))-
+                                  sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.second$psi1rho%*%res$Phi.inv%*%res$x))+
+                                  sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$x))+
+                                  sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$x))+
+                                  2*t(res$yres)%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$x%*%dbeta_dpsi1-
+                                  t(res$yres)%*%(-res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv-
+                                                   res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$Phi.derivatives$psi1%*%res$Phi.inv+
+                                                   res$Phi.inv%*%res$Phi.second$psi1rho%*%res$Phi.inv)%*%res$yres)
+    Hpsi2psi2 <- Hpsi2psi2 - 0.5*(sum(diag(res$Phi.inv%*%res$Phi.second$psi2psi2)) - sum(diag(res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$Phi.derivatives$psi2))-
+                                    sum(diag(solve(sum_xPhiInvX)%*%sum_xPhipsi2Phix%*%solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$x))-
+                                    sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.second$psi2psi2%*%res$Phi.inv%*%res$x))+
+                                    sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$x))+
+                                    sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$x))+
+                                    2*t(res$yres)%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$x%*%dbeta_dpsi2-
+                                    t(res$yres)%*%(-res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv-
+                                                     res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv+
+                                                     res$Phi.inv%*%res$Phi.second$psi2psi2%*%res$Phi.inv)%*%res$yres)
+    Hpsi2rho <- Hpsi2rho - 0.5*(sum(diag(res$Phi.inv%*%res$Phi.second$psi2rho)) - sum(diag(res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$Phi.derivatives$rho))-
+                                  sum(diag(solve(sum_xPhiInvX)%*%sum_xPhipsi2Phix%*%solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$x))-
+                                  sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.second$psi2rho%*%res$Phi.inv%*%res$x))+
+                                  sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$x))+
+                                  sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$x))+
+                                  2*t(res$yres)%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$x%*%dbeta_dpsi2-
+                                  t(res$yres)%*%(-res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv-
+                                                   res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$Phi.derivatives$psi2%*%res$Phi.inv+
+                                                   res$Phi.inv%*%res$Phi.second$psi2rho%*%res$Phi.inv)%*%res$yres)
+    Hrhorho <- Hrhorho - 0.5*(sum(diag(res$Phi.inv%*%res$Phi.second$rhorho)) - sum(diag(res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$Phi.derivatives$rho))-
+                                sum(diag(solve(sum_xPhiInvX)%*%sum_xPhirhoPhix%*%solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$x))-
+                                sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.second$rhorho%*%res$Phi.inv%*%res$x))+
+                                sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$x))+
+                                sum(diag(solve(sum_xPhiInvX)%*%res$x%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$x))+
+                                2*t(res$yres)%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$x%*%dbeta_drho-
+                                t(res$yres)%*%(-res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv-
+                                                 res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv%*%res$Phi.derivatives$rho%*%res$Phi.inv+
+                                                 res$Phi.inv%*%res$Phi.second$rhorho%*%res$Phi.inv)%*%res$yres)
 
-  d2_ell_R_psi1_2_2 <- -0.5 * (-term1_psi1_2_2 + grad_psi1psi1 + 2 * term4_psi1_2_2 - term5_psi1_2_2)
-
-  # Compute d2_ell_R_psi2_2_2
-  term1_psi2_2_2 <- sum(1 / (psi2_2 + s2_2)^2)
-  term4_psi2_2_2 <- sum((y2 - mu2)^2 / ((1 - rho^2) * (psi2_2 + s2_2)^3))
-  term5_psi2_2_2 <- (3/2) * sum(rho * (y1 - mu1) * (y2 - mu2) / ((1 - rho^2) * (psi1_2 + s1_2)^(1/2) * (psi2_2 + s2_2)^(5/2)))
-
-  d2_ell_R_psi2_2_2 <- -0.5 * (-term1_psi2_2_2 + grad_psi2psi2 + 2 * term4_psi2_2_2 - term5_psi2_2_2)
-
-  # Compute d2_ell_R_rho_2
-  term1_rho_2 <- -2 * n * (1 + rho^2) / (1 - rho^2)^2
-  term4_rho_2 <- 8 * rho / (1 - rho^2)^3 * sum(rho * ((y1 - mu1)^2 / (psi1_2 + s1_2) + (y2 - mu2)^2 / (psi2_2 + s2_2)) -
-                                                 (1 + rho^2) * (y1 - mu1) * (y2 - mu2) / sqrt((psi1_2 + s1_2) * (psi2_2 + s2_2)))
-  term5_rho_2 <- 2 / (1 - rho^2)^2 * sum((y1 - mu1)^2 / (psi1_2 + s1_2) + (y2 - mu2)^2 / (psi2_2 + s2_2) -
-                                           2 * rho * (y1 - mu1) * (y2 - mu2) / sqrt((psi1_2 + s1_2) * (psi2_2 + s2_2)))
-  d2_ell_R_rho_2 <- -0.5 * (term1_rho_2 + grad_rhorho + term4_rho_2 + term5_rho_2)
-
-  # Compute d2_ell_R_psi1_2_psi2_2
-  term3_psi1_2_psi2_2 <- -0.5*sum(rho * (y1 - mu1) * (y2 - mu2) / ((1 - rho^2) * (psi1_2 + s1_2)^(3/2) * (psi2_2 + s2_2)^(3/2)))
-  d2_ell_R_psi1_2_psi2_2 <- -0.5 * (grad_psi1psi2 + term3_psi1_2_psi2_2)
-
-  # Compute d2_ell_R_psi1_2_rho
-  term3_psi1_2_rho <- (2/(1 - rho^2)^2) * sum(-rho*(y1 - mu1)^2 / (psi1_2 + s1_2)^2
-                                              + (1 + rho^2) * (y1 - mu1) * (y2 - mu2) / (2*(psi1_2 + s1_2)^(3/2) * (psi2_2 + s2_2)^(1/2)))
-  d2_ell_R_psi1_2_rho <- -0.5 * (grad_psi1rho + term3_psi1_2_rho)
-
-  # Compute d2_ell_R_psi2_2_rho
-  term3_psi2_2_rho <- (2/(1 - rho^2)^2) * sum(-rho*(y2 - mu2)^2 / (psi2_2 + s2_2)^2 +
-                                                (1 + rho^2) * (y1 - mu1) * (y2 - mu2) / (2 * (psi1_2 + s1_2)^(1/2) * (psi2_2 + s2_2)^(3/2)))
-  d2_ell_R_psi2_2_rho <- -0.5 * (grad_psi2rho + term3_psi2_2_rho)
-
-  hessian.reml <- matrix(0, nrow = 3, ncol = 3)
-  hessian.reml[1,1] <- d2_ell_R_psi1_2_2
-  hessian.reml[2,2] <- d2_ell_R_psi2_2_2
-  hessian.reml[3,3] <- d2_ell_R_rho_2
-  hessian.reml[1,2] <- hessian.reml[2,1] <- d2_ell_R_psi1_2_psi2_2
-  hessian.reml[2,3] <- hessian.reml[3,2] <- d2_ell_R_psi2_2_rho
-  hessian.reml[1,3] <- hessian.reml[3,1] <- d2_ell_R_psi1_2_rho
-
-  J <- diag(c(psi1_2, psi2_2, (1-rho^2)/2 ))
-  H.trans <- t(J)%*%hessian.reml%*%J
-  return(list(H.orig = hessian.reml,
-              H.trans = H.trans))
+  }
+  H <- matrix(0, 3, 3)
+  H[1, 1] <- Hpsi1psi1
+  H[2, 2] <- Hpsi2psi2
+  H[3, 3] <- Hrhorho
+  H[1, 2] <- H[2, 1] <- Hpsi1psi2
+  H[1, 3] <- H[3, 1] <- Hpsi1rho
+  H[2, 3] <- H[3, 2] <- Hpsi2rho
+  J <- diag(c(psi1_2, psi2_2, (1 - rho^2)/2))
+  H_trans <- t(J) %*% H %*% J
+  return(list(H.orig = H,
+              H.trans = H_trans))
 }
 
 solve_remlBeta <- function(reml.root, data){

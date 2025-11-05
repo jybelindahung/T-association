@@ -10,20 +10,31 @@
 #' @importFrom utils capture.output modifyList
 #' @param data A list containing transformed treatment effect estimates and corresponding standard errors for both endpoints.
 #'             Required columns: `y1`, `se1`, `y2`, `se2`.
+#' @param data A list of numeric vectors containing transformed treatment effect estimates
+#'   and corresponding standard errors for two endpoints (e.g., potential surrogate and true endpoint).
+#'   Each vector must have length \eqn{n}, with elements ordered by study:
+#'   \describe{
+#'     \item{y1}{Log-transformed effect estimates for endpoint 1.}
+#'     \item{se1}{Standard errors corresponding to \code{y1}.}
+#'     \item{y2}{Log-transformed effect estimates for endpoint 2.}
+#'     \item{se2}{Standard errors corresponding to \code{y2}.}
+#'   }
+#'   The four vectors must be aligned such that the \eqn{i}th elements of
+#'   \code{y1}, \code{se1}, \code{y2}, and \code{se2} all refer to the same study.
 #' @param psi.prior.dist Character string specifying the prior for the between-study variances.
 #'   Options:
 #'   \describe{
 #'     \item{\code{"half-t"}}{Half-t prior on the standard deviation (\eqn{\psi}) [default].}
 #'     \item{\code{"inverse-gamma"}}{Inverse-gamma prior on the variance (\eqn{\psi^2}).}
 #'   }
-#' @param ig_shape Numeric. Shape parameter for the inverse-gamma prior if \code{psi.prior.dist = "inverse-gamma"}. Default is 2.1.
-#' @param ig_scale Numeric. Scale parameter for the inverse-gamma prior if \code{psi.prior.dist = "inverse-gamma"}. Default is 1.
+#' @param ig_shape Numeric. Shape parameter for the inverse-gamma prior if \code{psi.prior.dist = "inverse-gamma"}. Default is 0.001.
+#' @param ig_scale Numeric. Scale parameter for the inverse-gamma prior if \code{psi.prior.dist = "inverse-gamma"}. Default is 0.001.
 #' @param half_t_df Numeric. Degrees of freedom for the half-t prior if \code{psi.prior.dist = "half-t"}. Default is 3.
-#' @param half_t_scale Numeric. Scale parameter for the half-t prior if \code{psi.prior.dist = "half-t"}. Default is 2.5.
+#' @param half_t_scale Numeric. Scale parameter for the half-t prior if \code{psi.prior.dist = "half-t"}. Default is 0.3.
 #' @param rho.prior.dist Character string specifying the prior for the correlation parameter \eqn{\rho}.
 #'   Options:
 #'   \describe{
-#'     \item{\code{"fisherz"}}{Fisher z-transform normal prior [default].}
+#'     \item{\code{"fisherz"}}{Fisher z-transform standard normal prior [default].}
 #'     \item{\code{"uniform"}}{Uniform prior on \eqn{\rho} in [-1,1].}
 #'   }
 #' @param nuts_params A named list of settings controlling the
@@ -74,10 +85,10 @@
 
 t_bayes <- function(data,
                     psi.prior.dist = c("half-t", "inverse-gamma"),
-                    ig_shape = 2.1,
-                    ig_scale = 1,
+                    ig_shape = 0.001,
+                    ig_scale = 0.001,
                     half_t_df = 3,
-                    half_t_scale = 2.5,
+                    half_t_scale = 0.3,
                     rho.prior.dist = c("fisherz", "uniform"),
                     nuts_params = list(chains = 4,
                                        iter_warmup = 1000,
