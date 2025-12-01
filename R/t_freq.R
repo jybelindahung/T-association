@@ -24,7 +24,7 @@
 #'   \preformatted{
 #'   list(
 #'     method = "Broyden",
-#'     control = list(maxit = 200, ftol = 1e-6, xtol = 1e-6)
+#'     control = list(maxit = 200, ftol = 1e-6, xtol = 1e-8)
 #'   )
 #'   }
 #'
@@ -44,6 +44,7 @@
 #' @param pars.start Numeric vector of initial values for iterative parameter estimation. If \code{NULL}, data-driven initial values are used.
 #' @param verbose Logical. If \code{TRUE}, shows progress messages. Default is \code{TRUE}.
 #' @param alpha Numeric. Significance level for confidence intervals. Default is 0.05.
+#' @param seed Optional positive integer used to fix the random number generator when performing bootstrap sampling. If NULL, no seed is set.
 #' @return A list with two elements:
 #' \describe{
 #'   \item{Results}{A data frame containing point estimates and confidence intervals of model parameters.
@@ -69,9 +70,10 @@ t_freq <- function(data,
                      method = "Broyden",
                      control = list(maxit = 200,
                                     ftol = 1e-6,
-                                    xtol = 1e-6)),
+                                    xtol = 1e-8)),
                    verbose = TRUE,
-                   alpha = 0.05) {
+                   alpha = 0.05,
+                   seed = NULL) {
   # Input checks
   stopifnot(is.list(data))
   required <- c("y1", "y2", "se1", "se2")
@@ -96,6 +98,7 @@ t_freq <- function(data,
     paste0("Wald ", ci_label, "% CI")
   }
   param.names <- c("beta1", "beta2", "psi1_2", "psi2_2", "rho")
+  if(!is.null(seed)){set.seed(seed)}
   # Run selected method
   if (method == "ML") {
     if (verbose) message("Running ML estimation...")
@@ -109,6 +112,7 @@ t_freq <- function(data,
     # Compute Hessian & SE
     ml.Htrans_Htheta <- ml_hessian(data, ml.root)
     ml.setrans_setheta <- freq_se(ml.Htrans_Htheta)
+    if(sum(sapply(ml.setrans_setheta, function(x) is.nan(x)))>0) return(NULL)
     # Compute Wald CI
     ml.est_wald.ci <- freq_WaldCI(ml.root, ml.setrans_setheta$se.trans, alpha = alpha)
     df.mlwald <- data.frame(
@@ -136,7 +140,7 @@ t_freq <- function(data,
       if (verbose) message("Computing ML Wald CIs...")
       ML <- df.mlwald
     }
-
+    ML = ML[c(5,1:4),];row.names(ML)<-1:5
     text_summary <- paste0(
       "Point estimates obtained using Maximum Likelihood (ML). ",
       sprintf("%s%% confidence intervals computed using the %s method%s.",
@@ -188,7 +192,7 @@ t_freq <- function(data,
       if (verbose) message("Computing REML Wald CIs...")
       REML <- df.remlwald
     }
-
+    REML = REML[c(5,1:4),];row.names(REML)<-1:5
     text_summary <- paste0(
       "Point estimates obtained using Restricted Maximum Likelihood (REML). ",
       sprintf("%s%% confidence intervals computed using the %s method%s.",
@@ -235,8 +239,8 @@ ml_scores <- function(data, x) {
   # Parameters
   beta1 <- x[1:p]
   beta2 <- x[(p+1):(2*p)]
-  psi1_2 <- exp(x[2*p + 1])
-  psi2_2 <- exp(x[2*p + 2])
+  psi1_2 <- exp(x[2*p + 1]) + 1e-3
+  psi2_2 <- exp(x[2*p + 2]) + 1e-3
   rho <- (2 * plogis(x[2*p + 3])) - 1  # inverse logit scaled to (-1, 1)
 
   n <- length(data$y1)
@@ -297,8 +301,8 @@ ml_hessian <- function(data, ml.root){
   # Parameters
   beta1.hat <- ml.root[1:p]
   beta2.hat <- ml.root[(p+1):(2*p)]
-  psi1_2.hat <- exp(ml.root[2*p + 1])
-  psi2_2.hat <- exp(ml.root[2*p + 2])
+  psi1_2.hat <- exp(ml.root[2*p + 1])+1e-3
+  psi2_2.hat <- exp(ml.root[2*p + 2])+1e-3
   rho.hat <- (2 * plogis(ml.root[2*p + 3])) - 1  # inverse logit scaled to (-1, 1)
 
   data$X <- matrix(1, nrow = n, ncol = 1)
@@ -432,13 +436,36 @@ ml_solve <- function(data, pars.start,
     return(NULL)
   })
 
-  # Check convergence
-  if (is.null(res) || res$termcd > 2 || any(abs(res$fvec) > 1e-5)) {  # 1 or 2 mean success
-    if (verbose) message("ml_solve(): did not converge. termcd = ", res$termcd)
-    return(NULL)
+  # --- check convergence safely ---
+  if (!is.null(res)) {
+    converged <- res$termcd %in% c(1, 2) &&
+      all(is.finite(res$fvec)) &&
+      max(abs(res$fvec)) < 1e-5
+  } else {
+    converged <- FALSE
   }
 
-  if (verbose) message("ml_solve(): converged successfully.")
+  # --- verbose reporting ---
+  if (verbose) {
+    if (is.null(res)) {
+      message("ml_solve(): error when applying nleqslv.")
+    } else if (!converged) {
+      msg <- sprintf(
+        "ml_solve(): non-convergence [termcd=%d]. Message: %s",
+        res$termcd, res$message
+      )
+      msg <- paste0(msg, ". May consider adjusting the initial values.")
+      message(msg)
+    } else {
+      msg <- sprintf(
+        "ml_solve(): converged successfully [termcd=%d].",
+        res$termcd)
+      message(msg)
+    }
+  }
+  if (!converged) {
+    return(NULL)
+  }
   return(res)
 }
 ml_paramBoot <- function(data, ml.results,
@@ -547,8 +574,8 @@ reml_scores <- function(data, x) {
   n <- length(data$y1)
 
   # Transform parameters
-  psi1_2 <- exp(x[1])
-  psi2_2 <- exp(x[2])
+  psi1_2 <- exp(x[1]) + 1e-3
+  psi2_2 <- exp(x[2]) + 1e-3
   rho <- 2 * plogis(x[3]) - 1  # scale to (-1,1)
 
   # Data
@@ -669,8 +696,8 @@ reml_hessian <- function(data, reml.root) {
   p <- ncol(X)
 
   # Parameters
-  psi1_2 <- exp(reml.root[1])
-  psi2_2 <- exp(reml.root[2])
+  psi1_2 <- exp(reml.root[1])+1e-3
+  psi2_2 <- exp(reml.root[2])+1e-3
   rho <- (2 * plogis(reml.root[3])) - 1
   beta_hat <- solve_remlBeta(reml.root = reml.root,
                              data = data)$beta_hat
@@ -921,13 +948,37 @@ reml_solve <- function(data,
     return(NULL)
   })
 
-  # Check convergence
-  if (is.null(res) || res$termcd > 2 || any(abs(res$fvec) > 1e-5)) {  # 1 or 2 mean success
-    if (verbose) message("reml_solve(): did not converge. termcd = ", res$termcd)
-    return(NULL)
+  # --- check convergence safely ---
+  if (!is.null(res)) {
+    converged <- res$termcd %in% c(1, 2) &&
+      all(is.finite(res$fvec)) &&
+      max(abs(res$fvec)) < 1e-5
+  } else {
+    converged <- FALSE
   }
 
-  if (verbose) message("reml_solve(): converged successfully.")
+  # --- verbose reporting ---
+  if (verbose) {
+    if (is.null(res)) {
+      message("reml_solve(): error when applying nleqslv.")
+    } else if (!converged) {
+      msg <- sprintf(
+        "reml_solve(): non-convergence [termcd=%d]. Message: %s",
+        res$termcd, res$message
+      )
+      msg <- paste0(msg, ". May consider adjusting the initial values.")
+      message(msg)
+    } else {
+      msg <- sprintf(
+        "reml_solve(): converged successfully [termcd=%d].",
+        res$termcd
+      )
+      message(msg)
+    }
+  }
+  if (!converged) {
+    return(NULL)
+  }
   return(res)
 }
 

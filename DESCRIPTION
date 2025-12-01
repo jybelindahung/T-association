@@ -1,8 +1,8 @@
 Package: tassociation
 Type: Package
-Title: Evaluation methods for T-association
-Version: 0.3.0
-Author: Jo-Ying Hung, Chih-Yuan Hsu, Pei-Fang Su, Yu Shyr
+Title: Methods for Point and Interval Estimation of a Correlation Measure for Evaluating T-Association
+Version: 0.4.0
+Author: Jo-Ying Hung
 Description: A tool to evaluate T-association, provides point and interval estimates of the correlation.
 Maintainer: Jo-Ying Hung <r28091517@gs.ncku.edu.tw>
 License: GPL-2 | GPL-3

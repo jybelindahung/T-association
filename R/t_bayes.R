@@ -1,4 +1,4 @@
-#' @title Bayesian Estimation for Bivariate Random-Effects Meta-Analysis (BRMA) Model
+#' @title Bayesian Estimation for BRMA model parameters
 #' @description
 #' Performs Bayesian estimation of the Bivariate Random-Effects Meta-Analysis (BRMA) model
 #' using \pkg{cmdstanr}. Supports flexible prior choices for the between-study variances
@@ -63,11 +63,12 @@
 #'   }
 #'
 #'   Other arguments supported by \code{\link[cmdstanr]{sample}}, such as
-#'   \code{seed}, \code{init}, \code{max_treedepth}, can also be included.
+#'   \code{init}, \code{max_treedepth}, can also be included.
 #'   Any arguments not specified in \code{nuts_params} will retain the
 #'   default values from \code{\link[cmdstanr]{sample}}.
 #' @param verbose Logical. If \code{TRUE}, prints progress messages from Stan. Default is \code{TRUE}.
 #' @param alpha Numeric. Significance level for posterior credible intervals. Default is 0.05.
+#' @param seed Optional positive integer used to fix the random number generator. If NULL, no seed is set.
 #' @return A list with two elements:
 #' \describe{
 #'   \item{\code{Results}}{Data frame of posterior summaries for each parameter including:
@@ -95,7 +96,8 @@ t_bayes <- function(data,
                                        iter_sampling = 1000,
                                        adapt_delta = 0.99),
                     verbose = TRUE,
-                    alpha = 0.05) {
+                    alpha = 0.05,
+                    seed = NULL) {
   # Input checks
   stopifnot(is.list(data))
   required <- c("y1", "y2", "se1", "se2")
@@ -138,6 +140,7 @@ t_bayes <- function(data,
   nuts_params$data <- stan_data
   nuts_params$parallel_chains <- nuts_params$chains
   nuts_params$show_messages <- verbose
+  nuts_params$seed <- seed
 
   # Fit model
   fit <- tryCatch({
@@ -194,6 +197,7 @@ t_bayes <- function(data,
   prior_summary <- c(prior_summary,
                      paste0("Rho prior: ", rho.prior.dist))
 
+  results = results[c(5,1:4),]; row.names(results)<-1:5
   return(list(
     Results = results,
     prior_summary = prior_summary

@@ -2,7 +2,7 @@
 % Please edit documentation in R/t_bayes.R
 \name{t_bayes}
 \alias{t_bayes}
-\title{Bayesian Estimation for Bivariate Random-Effects Meta-Analysis (BRMA) Model}
+\title{Bayesian Estimation for BRMA model parameters}
 \usage{
 t_bayes(
   data,
@@ -15,7 +15,8 @@ t_bayes(
   nuts_params = list(chains = 4, iter_warmup = 1000, iter_sampling = 1000, adapt_delta =
     0.99),
   verbose = TRUE,
-  alpha = 0.05
+  alpha = 0.05,
+  seed = NULL
 )
 }
 \arguments{
@@ -86,6 +87,8 @@ Options:
 \item{verbose}{Logical. If \code{TRUE}, prints progress messages from Stan. Default is \code{TRUE}.}
 
 \item{alpha}{Numeric. Significance level for posterior credible intervals. Default is 0.05.}
+
+\item{seed}{Optional positive integer used to fix the random number generator. If NULL, no seed is set.}
 }
 \value{
 A list with two elements:

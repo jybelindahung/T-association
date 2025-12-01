@@ -9,7 +9,7 @@
 #'
 #' @param data A data frame where each row represents a study, containing the following columns:
 #'   \describe{
-#'     \item{effect}{The reported effect estimate (e.g., OR, RR, HR).}
+#'     \item{effect}{The reported effect estimate (e.g., OR, HR).}
 #'     \item{effect.lower}{The lower bound of the reported confidence interval.}
 #'     \item{effect.upper}{The upper bound of the reported confidence interval.}
 #'     \item{ci.level}{The confidence level (e.g., 95 for a 95\% CI).}

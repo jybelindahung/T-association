@@ -11,9 +11,10 @@ t_freq(
   bootstrap.times = 1000,
   pars.start = NULL,
   nleqslv.param = list(method = "Broyden", control = list(maxit = 200, ftol = 1e-06, xtol
-    = 1e-06)),
+    = 1e-08)),
   verbose = TRUE,
-  alpha = 0.05
+  alpha = 0.05,
+  seed = NULL
 )
 }
 \arguments{
@@ -46,7 +47,7 @@ Default is \code{"auto"}, which chooses appropriate method based on sample size.
   \preformatted{
   list(
     method = "Broyden",
-    control = list(maxit = 200, ftol = 1e-6, xtol = 1e-6)
+    control = list(maxit = 200, ftol = 1e-6, xtol = 1e-8)
   )
   }
 
@@ -66,6 +67,8 @@ Default is \code{"auto"}, which chooses appropriate method based on sample size.
 \item{verbose}{Logical. If \code{TRUE}, shows progress messages. Default is \code{TRUE}.}
 
 \item{alpha}{Numeric. Significance level for confidence intervals. Default is 0.05.}
+
+\item{seed}{Optional positive integer used to fix the random number generator when performing bootstrap sampling. If NULL, no seed is set.}
 }
 \value{
 A list with two elements:
