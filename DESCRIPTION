@@ -1,7 +1,7 @@
 Package: tassociation
 Type: Package
 Title: Methods for Point and Interval Estimation of a Correlation Measure for Evaluating T-Association
-Version: 0.4.0
+Version: 0.4.1
 Author: Jo-Ying Hung
 Description: A tool to evaluate T-association, provides point and interval estimates of the correlation.
 Maintainer: Jo-Ying Hung <r28091517@gs.ncku.edu.tw>

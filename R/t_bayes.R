@@ -193,9 +193,14 @@ t_bayes <- function(data,
                        paste0("Psi prior: half-t(", half_t_df, ", ",half_t_scale, ") on SD (psi)"))
   }
 
-  # Rho prior
-  prior_summary <- c(prior_summary,
-                     paste0("Rho prior: ", rho.prior.dist))
+  # Rho prior, "uniform"
+  if(rho.prior.dist == "fisherz"){
+    prior_summary <- c(prior_summary,
+                       paste0("Rho prior: N(0,1) on Fisher-z transformed rho"))
+  }else if(rho.prior.dist == "uniform"){
+    prior_summary <- c(prior_summary,
+                       paste0("Rho prior: Uniform(-1,1) prior on rho"))
+  }
 
   results = results[c(5,1:4),]; row.names(results)<-1:5
   return(list(

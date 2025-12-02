@@ -80,7 +80,7 @@ Options:
   }
 
   Other arguments supported by \code{\link[cmdstanr]{sample}}, such as
-  \code{seed}, \code{init}, \code{max_treedepth}, can also be included.
+  \code{init}, \code{max_treedepth}, can also be included.
   Any arguments not specified in \code{nuts_params} will retain the
   default values from \code{\link[cmdstanr]{sample}}.}
 

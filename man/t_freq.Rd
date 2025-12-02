@@ -7,7 +7,7 @@
 t_freq(
   data,
   method = c("REML", "ML"),
-  interval.method = c("auto", "Wald", "bootstrap"),
+  interval.method = c("auto", "normal", "bootstrap"),
   bootstrap.times = 1000,
   pars.start = NULL,
   nleqslv.param = list(method = "Broyden", control = list(maxit = 200, ftol = 1e-06, xtol
@@ -32,7 +32,7 @@ The four vectors must be aligned such that the \eqn{i}th elements of
 
 \item{method}{Character string specifying the frequentist estimation method. Supported options: \code{c("REML" , "ML")}. Default is \code{"REML"}.}
 
-\item{interval.method}{Character string specifying the method to construct confidence intervals. Supported options: \code{c("wald", "bootstrap", "auto")}.
+\item{interval.method}{Character string specifying the method to construct confidence intervals. Supported options: \code{c("normal", "bootstrap", "auto")}.
 Default is \code{"auto"}, which chooses appropriate method based on sample size.}
 
 \item{bootstrap.times}{Integer. Number of bootstrap replications if \code{interval.method = "bootstrap"}. Default is 1000.}
@@ -88,5 +88,5 @@ data <- list(y1 = c(0.198, -0.091, 0.345, 1.193, 0.828, 1.671, 0.152, 1.416),
              se2 = c(0.465, 0.408, 0.240, 0.384, 0.239, 0.434, 0.141, 0.159))
 t_freq(data) # parameters estimated by REML;
              # confidence intervals constructed by bootstrap (sample size <10)
-t_freq(data, method = "ML", interval.method = "Wald", verbose = TRUE)
+t_freq(data, method = "ML", interval.method = "normal", verbose = TRUE)
 }

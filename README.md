@@ -7,7 +7,7 @@ Evaluation Methods for T-association of a Surrogate Endpoint
 
 **Abstract:**\
 A surrogate endpoint is a biomarker used instead of a clinical endpoint to predict the clinical benefit of a drug. It serves as a substitute for a primary endpoint, offering benefits when it can be measured earlier or more conveniently. According to the Food and Drug Administration (FDA), a valid surrogate endpoint must meet two associations: I-association (the association between the surrogate and true endpoints, such as disease response and overall survival) and T-association (the association between treatment effects on both endpoints, such as odds ratio and hazard ratio). I-association is commonly evaluated, but T-association is often overlooked due to lack of appropriate statistical method. To address this gap, we propose a new method to assess T-association and meet the FDA guidelines. This method assumes that treatment effects on the surrogate and true endpoints follow a bivariate normal distribution.
-The key evaluation metric is the correlation coefficient, which quantifies the relationship between treatment effects on both endpoints. Model parameters, including this correlation, are estimated using maximum likelihood, restricted maximum likelihood, and a Bayesian approach. Simulated data and real-world data are used to demonstrate the method. The method will serve as the statistical foundation for future FDA Accelerated Approval drugs. The R package to implement the proposed method is available at \href{https://github.com/jybelindahung/T-association}{https://github.com/jybelindahung/T-association}.
+The key evaluation metric is the correlation coefficient, which quantifies the relationship between treatment effects on both endpoints. Model parameters, including this correlation, are estimated using maximum likelihood, restricted maximum likelihood, and a Bayesian approach. Simulated data and real-world data are used to demonstrate the method. The method will serve as the statistical foundation for future FDA Accelerated Approval drugs. The R package to implement the proposed method is available at https://github.com/jybelindahung/T-association}{https://github.com/jybelindahung/T-association.
 
 **Preprint:**\
 Jo-Ying Hung, Chih-Yuan Hsu, Pei-Fang Su, and Yu Shyr (2025). Evaluation Methods for T-association of a Surrogate Endpoint. medRxiv, 2025-08. <https://www.medrxiv.org/content/10.1101/2025.08.28.25334653v1>
@@ -168,12 +168,12 @@ $Summary
 
 The estimated correlation (rho) in this example using the frequentist approach is −0.79, with a 95% bootstrap confidence interval of (−0.980, −0.156). 
 
-To specify the point estimation method (`ML` or `REML`) and the interval estimation method (`Wald` or `bootstrap`), use:
+To specify the point estimation method (`ML` or `REML`) and the interval estimation method (`normal` or `bootstrap`), use:
 
 ```r
-t_freq(data.oros, method = "ML",   interval.method = "Wald")
+t_freq(data.oros, method = "ML",   interval.method = "normal")
 t_freq(data.oros, method = "ML",   interval.method = "bootstrap")
-t_freq(data.oros, method = "REML", interval.method = "Wald")
+t_freq(data.oros, method = "REML", interval.method = "normal")
 ```
 ### Estimate by Bayesian approach
 This `t_bayes` function estimates the T-association using a Bayesian approach with MCMC, returning posterior summaries for all parameters.

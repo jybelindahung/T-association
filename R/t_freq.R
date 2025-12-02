@@ -14,7 +14,7 @@
 #'   The four vectors must be aligned such that the \eqn{i}th elements of
 #'   \code{y1}, \code{se1}, \code{y2}, and \code{se2} all refer to the same study.
 #' @param method Character string specifying the frequentist estimation method. Supported options: \code{c("REML" , "ML")}. Default is \code{"REML"}.
-#' @param interval.method Character string specifying the method to construct confidence intervals. Supported options: \code{c("wald", "bootstrap", "auto")}.
+#' @param interval.method Character string specifying the method to construct confidence intervals. Supported options: \code{c("normal", "bootstrap", "auto")}.
 #'                        Default is \code{"auto"}, which chooses appropriate method based on sample size.
 #' @param nleqslv.param A list of control settings passed directly to
 #'   \code{\link[nleqslv]{nleqslv}} for solving the system of nonlinear equations
@@ -58,12 +58,12 @@
 #'              se2 = c(0.465, 0.408, 0.240, 0.384, 0.239, 0.434, 0.141, 0.159))
 #' t_freq(data) # parameters estimated by REML;
 #'              # confidence intervals constructed by bootstrap (sample size <10)
-#' t_freq(data, method = "ML", interval.method = "Wald", verbose = TRUE)
+#' t_freq(data, method = "ML", interval.method = "normal", verbose = TRUE)
 #' @export
 
 t_freq <- function(data,
                    method = c("REML", "ML"),
-                   interval.method = c("auto", "Wald", "bootstrap"),
+                   interval.method = c("auto", "normal", "bootstrap"),
                    bootstrap.times = 1000,
                    pars.start = NULL,
                    nleqslv.param = list(
@@ -86,7 +86,7 @@ t_freq <- function(data,
 
   # Determine interval method
   if (interval.method == "auto") {
-    interval.method <- if (n < 10) "bootstrap" else "Wald"
+    interval.method <- if (n < 10) "bootstrap" else "normal"
     if (verbose) message(sprintf("Sample size = %d -> using %s CI by default.", n, interval.method))
   }
 
@@ -95,7 +95,7 @@ t_freq <- function(data,
   ci_colname <- if (interval.method == "bootstrap") {
     paste0("bootstrapped ", ci_label, "% CI")
   } else {
-    paste0("Wald ", ci_label, "% CI")
+    paste0("normal ", ci_label, "% CI")
   }
   param.names <- c("beta1", "beta2", "psi1_2", "psi2_2", "rho")
   if(!is.null(seed)){set.seed(seed)}
@@ -113,32 +113,32 @@ t_freq <- function(data,
     ml.Htrans_Htheta <- ml_hessian(data, ml.root)
     ml.setrans_setheta <- freq_se(ml.Htrans_Htheta)
     if(sum(sapply(ml.setrans_setheta, function(x) is.nan(x)))>0) return(NULL)
-    # Compute Wald CI
-    ml.est_wald.ci <- freq_WaldCI(ml.root, ml.setrans_setheta$se.trans, alpha = alpha)
-    df.mlwald <- data.frame(
+    # Compute normal CI
+    ml.est_normal.ci <- freq_normalCI(ml.root, ml.setrans_setheta$se.trans, alpha = alpha)
+    df.mlnormal <- data.frame(
       Parameter = param.names,
-      Estimates = ml.est_wald.ci$Estimates,
+      Estimates = ml.est_normal.ci$Estimates,
       SE = ml.setrans_setheta$se.orig
     )
-    df.mlwald[[ci_colname]] <- ml.est_wald.ci$CI
+    df.mlnormal[[ci_colname]] <- ml.est_normal.ci$CI
     options(warn = old_warn)
     if (interval.method == "bootstrap") {
       if (verbose) message(sprintf("Running ML bootstrap (%d resamples)...", bootstrap.times))
       mlboot.res <- ml_paramBoot(data,
-                                 ml.results = df.mlwald,
+                                 ml.results = df.mlnormal,
                                  bootstrap.times = bootstrap.times,
                                  pars.start = pars.start,
                                  nleqslv.param = nleqslv.param,
                                  alpha = alpha)
       df.mlboot <- data.frame(
         Parameter = param.names,
-        Estimates = ml.est_wald.ci$Estimates
+        Estimates = ml.est_normal.ci$Estimates
       )
       df.mlboot[[ci_colname]] <- sprintf("(%.3f, %.3f)", mlboot.res$bootCI_lower, mlboot.res$bootCI_upper)
       ML <- df.mlboot
-    } else if (interval.method == "Wald") {
-      if (verbose) message("Computing ML Wald CIs...")
-      ML <- df.mlwald
+    } else if (interval.method == "normal") {
+      if (verbose) message("Computing ML normal CIs...")
+      ML <- df.mlnormal
     }
     ML = ML[c(5,1:4),];row.names(ML)<-1:5
     text_summary <- paste0(
@@ -163,34 +163,34 @@ t_freq <- function(data,
     # Compute Hessian & SE
     reml.Htrans_Htheta <- reml_hessian(data, reml.root)
     reml.setrans_setheta <- freq_se(reml.Htrans_Htheta)
-    # Compute Wald CI
-    reml.est_wald.ci <- freq_WaldCI(c(reml.beta$beta_hat, reml.root),
+    # Compute normal CI
+    reml.est_normal.ci <- freq_normalCI(c(reml.beta$beta_hat, reml.root),
                                     c(reml.beta$se_beta_hat, reml.setrans_setheta$se.trans), alpha = alpha)
 
-    df.remlwald <- data.frame(
+    df.remlnormal <- data.frame(
       Parameter = param.names,
-      Estimates = c(reml.est_wald.ci$Estimates),
+      Estimates = c(reml.est_normal.ci$Estimates),
       SE = c(reml.beta$se_beta_hat, reml.setrans_setheta$se.orig)
     )
-    df.remlwald[[ci_colname]] <- reml.est_wald.ci$CI
+    df.remlnormal[[ci_colname]] <- reml.est_normal.ci$CI
     options(warn = old_warn)
     if (interval.method == "bootstrap") {
       if (verbose) message(sprintf("Running REML bootstrap (%d resamples)...", bootstrap.times))
       remlboot.res <- reml_paramBoot(data,
-                                     reml.results = df.remlwald,
+                                     reml.results = df.remlnormal,
                                      bootstrap.times = bootstrap.times,
                                      pars.start = pars.start,
                                      nleqslv.param = nleqslv.param,
                                      alpha = alpha)
       df.remlboot <- data.frame(
         Parameter = param.names,
-        Estimates = reml.est_wald.ci$Estimates
+        Estimates = reml.est_normal.ci$Estimates
       )
       df.remlboot[[ci_colname]] <- sprintf("(%.3f, %.3f)", remlboot.res$bootCI_lower, remlboot.res$bootCI_upper)
       REML <- df.remlboot
-    } else if (interval.method == "Wald") {
-      if (verbose) message("Computing REML Wald CIs...")
-      REML <- df.remlwald
+    } else if (interval.method == "normal") {
+      if (verbose) message("Computing REML normal CIs...")
+      REML <- df.remlnormal
     }
     REML = REML[c(5,1:4),];row.names(REML)<-1:5
     text_summary <- paste0(
@@ -366,7 +366,7 @@ freq_se <- function(hessians, ridge = 1e-6) {
   list(se.orig = se.original, se.trans = se.trans)
 }
 
-freq_WaldCI <- function(root, se.trans, alpha) {
+freq_normalCI <- function(root, se.trans, alpha) {
   p <- 1
   z <- qnorm(1 - alpha/2)
 
